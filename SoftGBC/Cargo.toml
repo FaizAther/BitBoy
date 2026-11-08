@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "soc",
+    "cartridge",
+    "sm83-iss",
+    "dmg-ppu",
+    "softgbc-core",
+]
+
+# Shared package defaults for all members (optional).
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"

@@ -1,0 +1,8 @@
+[package]
+name = "cartridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Game Boy cartridge loader, header parse, and MBC (stub)"
+
+[dependencies]

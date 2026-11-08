@@ -1,0 +1,10 @@
+[submodule "qemu"]
+	path = qemu
+	url = git@github.com:FaizAther/qemu.git
+	branch = bitboy
+	shallow = true
+[submodule "llvm-project"]
+	path = llvm-project
+	url = git@github.com:FaizAther/llvm-project.git
+	branch = bitboy
+	shallow = true

@@ -1,0 +1,9 @@
+[package]
+name = "sm83-iss"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SM83 CPU instruction-set simulator (stub)"
+
+[dependencies]
+softgbc-core = { path = "../softgbc-core" }

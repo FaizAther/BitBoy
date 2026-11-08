@@ -1,0 +1,12 @@
+# All paths are under GBA/ (this directory).
+
+# Software machine (in-tree)
+SoftGba     ./SoftGba                            # virtual GB hardware components
+
+# Nested Rust library repos inside SoftGba/ (own .git → submodules later)
+sm83-iss    ./SoftGba/sm83-iss                   # git@github.com:<you>/sm83-iss.git  (Rust CPU ISS)
+dmg-ppu     ./SoftGba/dmg-ppu                    # git@github.com:<you>/dmg-ppu.git   (Rust PPU)
+
+# Heavy forks — git submodules of this GBA superproject
+qemu        ./qemu         git@github.com:FaizAther/qemu.git
+llvm        ./llvm-project git@github.com:FaizAther/llvm-project.git

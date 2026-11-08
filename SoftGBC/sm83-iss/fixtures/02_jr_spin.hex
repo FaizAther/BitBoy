@@ -1,0 +1,8 @@
+# requires: NOP, JR
+# entry: 0100
+#
+# NOP then JR -2 → loops on the JR forever (PC stays 0x0101).
+
+@0100
+00          ; NOP
+18 FE       ; JR -2

@@ -1,0 +1,14 @@
+[package]
+name = "soc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SoftGBC SoC glue + softgbc binary"
+
+[[bin]]
+name = "softgbc"
+path = "src/main.rs"
+
+[dependencies]
+softgbc-core = { path = "../softgbc-core" }
+sm83-iss = { path = "../sm83-iss" }

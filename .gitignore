@@ -1,0 +1,14 @@
+# Editor / agent
+.cursor/
+
+# Build artifacts
+**/target/
+
+# ROM dumps (copyrighted / redistributable test binaries — keep local only)
+*.gb
+*.gbc
+*.rom
+*.bin
+
+# Third-party datasheets (fetch from upstream; do not republish)
+docs/datasheets/*.pdf

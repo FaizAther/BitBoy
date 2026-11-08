@@ -1,0 +1,11 @@
+# requires: NOP
+# entry: 0100
+#
+# Three NOPs then a spin with JR once you implement JR.
+# Until JR exists, just step 3 times and check PC == 0x0103.
+
+@0100
+00          ; NOP
+00          ; NOP
+00          ; NOP
+# 18 FE     ; JR -2   (uncomment when JR works)

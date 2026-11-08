@@ -1,0 +1,10 @@
+# requires: LD r,n , JR
+# entry: 0100
+#
+# LD A,0x2A ; LD B,0x01 ; then spin.
+# After a few steps: A=0x2A, B=0x01.
+
+@0100
+3E 2A       ; LD A,d8
+06 01       ; LD B,d8
+18 FE       ; JR -2

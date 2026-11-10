@@ -8,29 +8,45 @@ pub trait Bus {
     fn write8(&mut self, addr: u16, data: u8) -> bool;
 }
 
-/// Memory map with compile-time ROM / WRAM / HRAM sizes.
+/// Memory map with compile-time ROM / WRAM / HRAM / IO / IE sizes.
 ///
-/// Default DMG-like sizes: `MemoryBus<0x8000, 0x2000, 0x7F>`.
-pub struct MemoryBus<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> {
+/// Default DMG-like sizes: `MemoryBus<0x8000, 0x2000, 0x7F, 0x80, 0x1>`.
+pub struct MemoryBus<
+    const ROM_SIZE: usize,
+    const WRAM_SIZE: usize,
+    const HRAM_SIZE: usize,
+    const IO_SIZE: usize,
+    const IE_SIZE: usize,
+> {
     rom: Rom<ROM_SIZE>,
     wram: Ram<WRAM_SIZE>,
     hram: Ram<HRAM_SIZE>,
+    /// I/O registers `$FF00`–`$FF7F` (includes IF at `$FF0F`).
+    io: Ram<IO_SIZE>,
+    ie: Ram<IE_SIZE>,
     /// Entry PC from last hex load (`# entry:`), if any.
     pub entry: u16,
 }
 
-/// 32 KiB ROM window, 8 KiB WRAM, 127-byte HRAM (`FF80`–`FFFE`).
-pub type DmgBus = MemoryBus<0x8000, 0x2000, 0x7F>;
+/// 32 KiB ROM, 8 KiB WRAM, 127 B HRAM, 128 B IO (`FF00`–`FF7F`), 1 B IE (`FFFF`).
+pub type DmgBus = MemoryBus<0x8000, 0x2000, 0x7F, 0x80, 0x1>;
 
-impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize>
-    MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE>
+impl<
+    const ROM_SIZE: usize,
+    const WRAM_SIZE: usize,
+    const HRAM_SIZE: usize,
+    const IO_SIZE: usize,
+    const IE_SIZE: usize,
+> MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE, IO_SIZE, IE_SIZE>
 {
-    /// Empty bus: ROM/WRAM/HRAM zeroed. No file load.
+    /// Empty bus: ROM/WRAM/HRAM/IO/IE zeroed. No file load.
     pub fn new() -> Self {
         Self {
             rom: Rom::new(),
             wram: Ram::new(),
             hram: Ram::new(),
+            io: Ram::new(),
+            ie: Ram::new(),
             entry: 0x0100,
         }
     }
@@ -109,6 +125,15 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize>
                 }
             }
         }
+        for addr in 0xFF00u16..=0xFF7F {
+            let local = (addr - 0xFF00) as usize;
+            if local < IO_SIZE {
+                let b = image.mem[addr as usize];
+                if b != 0 {
+                    let _ = bus.io.write(local as u16, b);
+                }
+            }
+        }
         for addr in 0xFF80u16..=0xFFFE {
             let local = (addr - 0xFF80) as usize;
             if local < HRAM_SIZE {
@@ -117,6 +142,10 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize>
                     let _ = bus.hram.write(local as u16, b);
                 }
             }
+        }
+        let ie_b = image.mem[0xFFFF];
+        if ie_b != 0 && IE_SIZE > 0 {
+            let _ = bus.ie.write(0, ie_b);
         }
         bus
     }
@@ -168,18 +197,41 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize>
             None
         }
     }
+
+    fn io_index(addr: u16) -> Option<u16> {
+        if (0xFF00..=0xFF7F).contains(&addr) {
+            let local = addr - 0xFF00;
+            if (local as usize) < IO_SIZE {
+                Some(local)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
-impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> Default
-    for MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE>
+impl<
+    const ROM_SIZE: usize,
+    const WRAM_SIZE: usize,
+    const HRAM_SIZE: usize,
+    const IO_SIZE: usize,
+    const IE_SIZE: usize,
+> Default for MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE, IO_SIZE, IE_SIZE>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> Bus
-    for MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE>
+impl<
+    const ROM_SIZE: usize,
+    const WRAM_SIZE: usize,
+    const HRAM_SIZE: usize,
+    const IO_SIZE: usize,
+    const IE_SIZE: usize,
+> Bus for MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE, IO_SIZE, IE_SIZE>
 {
     fn read8(&self, addr: u16) -> Option<u8> {
         match addr {
@@ -192,8 +244,10 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> Bus
                 }
             }
             0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
+            0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
             0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
-            // Unmapped / not implemented yet (VRAM, OAM, IO, IE, …)
+            0xFFFF => self.ie.read(0),
+            // Unmapped / not implemented yet (VRAM, OAM, …)
             _ => Some(0xFF),
         }
     }
@@ -208,6 +262,13 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> Bus
                     true
                 }
             }
+            0xFF00..=0xFF7F => {
+                if let Some(i) = Self::io_index(addr) {
+                    self.io.write(i, data)
+                } else {
+                    true
+                }
+            }
             0xFF80..=0xFFFE => {
                 if let Some(i) = Self::hram_index(addr) {
                     self.hram.write(i, data)
@@ -215,7 +276,8 @@ impl<const ROM_SIZE: usize, const WRAM_SIZE: usize, const HRAM_SIZE: usize> Bus
                     true
                 }
             }
-            // VRAM / OAM / IO / IE stubs: ignore for now
+            0xFFFF => self.ie.write(0, data),
+            // VRAM / OAM stubs: ignore for now
             _ => true,
         }
     }
@@ -255,11 +317,19 @@ mod tests {
     }
 
     #[test]
+    fn io_round_trip_includes_if() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert_eq!(bus.read8(0xFF0F), Some(0x00)); // IF starts clear
+        assert!(bus.write8(0xFF0F, 0x01));
+        assert_eq!(bus.read8(0xFF0F), Some(0x01));
+        assert!(bus.poke(0xFF0F, 0x00));
+        assert_eq!(bus.read8(0xFF0F), Some(0x00));
+    }
+
+    #[test]
     fn unmapped_reads_ff() {
         let bus: DmgBus = MemoryBus::new();
         assert_eq!(bus.read8(0x8000), Some(0xFF)); // VRAM stub
-        assert_eq!(bus.read8(0xFF00), Some(0xFF)); // IO stub
-        assert_eq!(bus.read8(0xFFFF), Some(0xFF)); // IE stub
     }
 
     #[test]

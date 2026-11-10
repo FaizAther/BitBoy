@@ -12,19 +12,19 @@ const FLAG_C: u8 = 0x10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cpu {
-    pub a: u8,
-    pub f: u8,
-    pub b: u8,
-    pub c: u8,
+    pub a: u8,          // Accumulator — main 8-bit ALU register
+    pub f: u8,          // Flags (only high nibble used): Z N H C in bits 7–4
+    pub b: u8,          // General 8-bit regs; paired as BC, DE, HL
+    pub c: u8,          // Also the usual pointer for (HL) memory ops
     pub d: u8,
     pub e: u8,
     pub h: u8,
     pub l: u8,
-    pub sp: u16,
-    pub pc: u16,
-    pub ime: bool,
-    pub halted: bool,
-    ei_delay: bool,
+    pub sp: u16,        // Stack pointer — PUSH/CALL/RST/IRQ decrease it; POP/RET increase it
+    pub pc: u16,        // Program counter — address of next instruction byte
+    pub ime: bool,      // Interrupt Master Enable — (software flip via EI/DI/RETI)
+    pub halted: bool,   // CPU stopped fetching until wake (HALT); still advances time
+    ei_delay: bool,     // Internal: “IME should turn on at the next instruction boundary”
 }
 
 impl Default for Cpu {
@@ -301,6 +301,31 @@ impl Cpu {
         res
     }
 
+    pub fn handle_interrupt(&mut self, bus: &mut impl Bus) {
+        let if_ = bus.read8(0xFF0F).unwrap_or(0);
+        let ie = bus.read8(0xFFFF).unwrap_or(0);
+        let pending = if_ & ie & 0x1F; // only 5 IRQ bits
+
+        let (vector, ack_mask) = if pending & 0x01 != 0 {
+            (0x0040u16, 0x01u8) // VBlank
+        } else if pending & 0x02 != 0 {
+            (0x0048, 0x02) // LCD STAT
+        } else if pending & 0x04 != 0 {
+            (0x0050, 0x04) // Timer
+        } else if pending & 0x08 != 0 {
+            (0x0058, 0x08) // Serial
+        } else if pending & 0x10 != 0 {
+            (0x0060, 0x10) // Joypad
+        } else {
+            return;
+        };
+
+        self.ime = false;
+        let _ = bus.write8(0xFF0F, if_ & !ack_mask); // ack accepted IF bit
+        self.push16(bus, self.pc);
+        self.pc = vector;
+    }
+
     /// Execute one instruction. Returns M-cycles.
     pub fn step(&mut self, bus: &mut impl Bus) -> u8 {
         if self.ei_delay {
@@ -313,7 +338,18 @@ impl Cpu {
         }
 
         let opcode = self.fetch8(bus);
-        self.execute(bus, opcode)
+        let cycles = self.execute(bus, opcode);
+
+        // IF (FF0F) — which interrupts are pending
+        // IE (FFFF) — which are enabled
+        let if_ = bus.read8(0xFF0F).unwrap_or(0);
+        let ie = bus.read8(0xFFFF).unwrap_or(0);
+        let pending = if_ & ie & 0x1F; // only 5 IRQ bits
+        if self.ime && (pending != 0) {
+            self.handle_interrupt(bus);
+            println!("interrupt!");
+        }
+        cycles
     }
 
     fn execute(&mut self, bus: &mut impl Bus, opcode: u8) -> u8 {
@@ -1286,5 +1322,82 @@ mod tests {
         cpu.step(&mut bus);
         assert_eq!(cpu.pc, 0x0103);
         assert!(cpu.ime);
+    }
+
+    #[test]
+    fn test_interrupt() {
+        // $0100: LD A,1; LDH (FF),A; EI; nop; jr -3  (IE=VBlank, then spin)
+        // $0040: DI; push bc/de/hl/af; nop; pop af/hl/de/bc; RETI
+        let mut bus = DmgBus::new();
+        load(
+            &mut bus,
+            0x0100,
+            &[0x3E, 0x01, 0xE0, 0xFF, 0xFB, 0x00, 0x18, 0xFD],
+        );
+        load(
+            &mut bus,
+            0x0040,
+            &[
+                0xF3, // DI
+                0xC5, // PUSH BC
+                0xD5, // PUSH DE
+                0xE5, // PUSH HL
+                0xF5, // PUSH AF
+                0x00, // NOP
+                0xF1, // POP AF
+                0xE1, // POP HL
+                0xD1, // POP DE
+                0xC1, // POP BC
+                0xD9, // RETI
+            ],
+        );
+
+        let mut cpu = Cpu::new();
+        cpu.sp = 0xFFFE;
+        assert!(bus.poke(0xFF0F, 0x00));
+
+        // Warm up: enable IE + IME, spin in main — must not enter ISR while IF=0.
+        for _ in 0..50 {
+            cpu.step(&mut bus);
+            assert!(cpu.pc >= 0x0100, "PC={:04X} left main early", cpu.pc);
+            assert_ne!(cpu.pc, 0x0040);
+        }
+        assert!(cpu.ime, "EI delay should have enabled IME");
+        assert_eq!(bus.read8(0xFFFF), Some(0x01), "IE should enable VBlank");
+        assert_eq!(bus.read8(0xFF0F), Some(0x00), "IF still clear");
+        assert_eq!(cpu.sp, 0xFFFE, "stack untouched before IRQ");
+
+        // Raise VBlank pending; after the next insn finishes, vector to ISR.
+        // (PC pushed is the address *after* that insn — still in the spin loop.)
+        let sp_before = cpu.sp;
+        assert!(bus.poke(0xFF0F, 0x01));
+        cpu.step(&mut bus);
+
+        assert_eq!(cpu.pc, 0x0040, "vectored to VBlank ISR");
+        assert_eq!(cpu.sp, sp_before.wrapping_sub(2), "PC pushed");
+        let ret_lo = bus.read8(cpu.sp).unwrap();
+        let ret_hi = bus.read8(cpu.sp.wrapping_add(1)).unwrap();
+        let ret_pc = u16::from(ret_hi) << 8 | u16::from(ret_lo);
+        assert!(
+            (0x0105..=0x0108).contains(&ret_pc),
+            "stacked return PC={:04X} should be in main spin",
+            ret_pc
+        );
+
+        assert_eq!(bus.read8(0xFF0F), Some(0x00), "IF bit acked on entry");
+        assert!(!cpu.ime, "IME cleared on entry");
+
+        // Run the ISR to completion and return via RETI.
+        for _ in 0..16 {
+            if cpu.pc >= 0x0100 {
+                break;
+            }
+            cpu.step(&mut bus);
+        }
+        assert!(cpu.pc >= 0x0100, "returned to main, PC={:04X}", cpu.pc);
+        assert_ne!(cpu.pc, 0x0040);
+        assert_eq!(cpu.sp, 0xFFFE, "SP restored after RETI");
+        assert!(cpu.ime, "RETI re-enables IME");
+        assert_eq!(bus.read8(0xFF0F), Some(0x00), "IF still clear after return");
     }
 }

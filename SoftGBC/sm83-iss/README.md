@@ -2,42 +2,66 @@
 
 **Idea:** a Rust crate that is the golden **SM83 CPU** model for the Game Boy platform.
 
-Not a full emulator. Not graphics. Just the CPU — correct, traceable, and reusable as a library (nested under `SoftGba/`, later a git submodule).
+Not a full emulator. Not graphics. Just the CPU — correct, testable, and reusable as a library (nested under `SoftGBC/`, later a git submodule).
 
 ```text
-.gb / test ROM
+.gb / hex fixture / Blargg ROM
       ↓
-  Bus trait (injected by host)
+  softgbc_core::Bus (injected by host)
       ↓
-  sm83-iss  ──JSONL traces──►  trace-diff  ◄── QEMU / Verilator / FPGA
+  sm83-iss::Cpu::step()
       ↓
-  step() / run()
+  (later) JSONL traces → trace-diff ← QEMU / Verilator / FPGA
 ```
+
+---
+
+## Current status *(2026-11)*
+
+| Item | State |
+|---|---|
+| Registers / flags | **Done** |
+| Full base ISA + `CB` prefix | **Done** |
+| `EI` / `DI` / `HALT` + IRQ vectoring | **Done** |
+| `Bus` via `softgbc_core::Bus` | **Done** (`Option`-based read/write) |
+| Opcode smoke tests | **Done** — `tests/every_opcode.rs` (~511 tests) + in-crate unit tests |
+| Hex fixtures | Early set present (`01`–`03`); ISA growth moved to white-box tests |
+| Trace CLI / JSONL | **Not started** |
+| Blargg via this crate alone | Prefer SoftGBC `soc` runner; CPU is ready |
+
+```bash
+cd SoftGBC
+cargo test -p sm83-iss
+```
+
+Blargg individuals (except interrupts) already pass through `soc` using this CPU. Remaining SoftGBC gap is **timer**, not missing opcodes.
+
+---
 
 ## Why Rust
 
 - Safe, explicit state machine for an ISA-heavy codebase
-- Easy library boundary (`sm83_iss` crate) for the platform SoC harness
-- Good test story (unit tests per opcode family + Blargg ROM integration tests)
+- Easy library boundary (`sm83_iss` crate) for SoftGBC SoC
+- Good test story (per-opcode tests + Blargg via SoC)
 - Optional `no_std`-friendly core later if we care; start with `std`
 
 ## In scope
 
-- Registers: `AF BC DE HL SP PC`
-- Flags: `Z N H C`
-- Full instruction set including `CB` prefix
-- Interrupts, `EI` / `DI` / `HALT` / `STOP`
-- Injectable memory via a `Bus` trait (read8 / write8)
-- Instruction tracing (and optional cycle-accurate timing later)
-- CLI binary: `sm83-iss <rom> [--trace out.jsonl]`
-- **Hex fixtures** under [`fixtures/`](fixtures/) — build opcodes one at a time
+- [x] Registers: `AF BC DE HL SP PC`
+- [x] Flags: `Z N H C`
+- [x] Full instruction set including `CB` prefix
+- [x] Interrupts, `EI` / `DI` / `HALT` / `STOP` (basic)
+- [x] Injectable memory via a `Bus` trait
+- [ ] Instruction tracing (JSONL) and optional cycle-accurate timing polish
+- [ ] Dedicated CLI binary: `sm83-iss <rom> [--trace out.jsonl]`
+- [x] Hex fixtures under [`fixtures/`](fixtures/) (early ladder; still useful)
 
 ## Instruction-by-instruction workflow
 
 1. Add/extend a file in `fixtures/` with only the bytes you need.
-2. Implement a hex loader + that opcode in the CPU yourself.
-3. Set `PC` to `# entry:`, `step()` and assert.
-4. Uncomment the next instruction in the fixture when ready.
+2. Load via `softgbc_core` hex loader; set `PC` to `# entry:`.
+3. `step()` and assert in a unit test.
+4. Or extend `tests/every_opcode.rs` for a single-opcode smoke.
 
 See [`fixtures/README.md`](fixtures/README.md).
 
@@ -46,65 +70,64 @@ See [`fixtures/README.md`](fixtures/README.md).
 | Concern | Where |
 |---|---|
 | PPU / LCD | `../dmg-ppu` |
-| APU / audio | SoftGba `apu/` / `soc/` |
-| MBC / cart banking | SoftGba `cartridge/` |
+| APU / audio | SoftGBC `apu/` / `soc/` |
+| MBC / cart banking | SoftGBC `cartridge/` |
+| Timer / DMA / joypad | SoftGBC peripheral folders + `soc` |
 | Verilog / FPGA | `GBA/rtl/` |
 | LLVM / QEMU | forks under `GBA/` |
 
-## Sketch API
+## Actual API *(today)*
 
 ```rust
-pub trait Bus {
-    fn read8(&mut self, addr: u16) -> u8;
-    fn write8(&mut self, addr: u16, data: u8);
-}
+// Bus lives in softgbc_core (not inside this crate):
+//   fn read8(&self, addr: u16) -> Option<u8>;
+//   fn write8(&mut self, addr: u16, data: u8) -> bool;
 
-pub struct Cpu<B: Bus> { /* regs, ime, halted, bus */ }
+pub struct Cpu { /* a f b c d e h l sp pc ime halted … */ }
 
-impl<B: Bus> Cpu<B> {
-    pub fn new(bus: B) -> Self;
-    pub fn reset(&mut self);
-    /// Execute one instruction; return machine cycles (M-cycles).
-    pub fn step(&mut self) -> u32;
-    pub fn set_tracer(&mut self, tracer: Option<Box<dyn Tracer>>);
+impl Cpu {
+    pub fn new() -> Self;
+    /// Execute one instruction; return M-cycles (`u8`).
+    pub fn step(&mut self, bus: &mut impl Bus) -> u8;
 }
 ```
 
-Flat 64KiB RAM+ROM stub implements `Bus` for CPU unit tests. The real Game Boy map lives in SoftGba (`bus/`, `memory/`, `soc/`) and wraps this CPU + `dmg-ppu`.
+`DmgBus` in `softgbc-core` is the usual host for unit tests and SoftGBC.
 
-## Crate layout (when implemented)
+## Crate layout *(as implemented)*
 
 ```text
 sm83-iss/
-├── Cargo.toml          # lib + bin
+├── Cargo.toml
 ├── src/
-│   ├── lib.rs
-│   ├── cpu.rs
-│   ├── decode.rs
-│   ├── ops.rs          # ALU, loads, jumps, CB
-│   ├── interrupts.rs
-│   ├── trace.rs
-│   └── bin/sm83-iss.rs
+│   └── lib.rs              # Cpu + decode/execute (single file for now)
 ├── tests/
-│   ├── opcode_smoke.rs
-│   └── blargg.rs       # needs tests/roms/
+│   └── every_opcode.rs     # one smoke test per opcode (+ invalids)
+├── fixtures/
+│   ├── 01_nop.hex
+│   ├── 02_jr_spin.hex
+│   ├── 03_ld_imm.hex
+│   └── README.md
 └── README.md
 ```
 
+Split into `cpu.rs` / `ops.rs` / `trace.rs` when tracing or file size demands it — not required for correctness.
+
 ## Done means (v1)
 
-1. Blargg `cpu_instrs` passes
-2. Stable trace format documented (PC, regs, flags, opcode, cycles, mem writes)
-3. `Cargo` library usable from SoftGba via path or submodule
-4. No PPU code in this repo
+1. [x] Full SM83 ISA with tests (Blargg individuals via SoftGBC nearly green)
+2. [ ] SoftGBC Blargg `02-interrupts` + agreed CPU set fully green *(SoC timer, not more opcodes)*
+3. [ ] Stable trace format documented (PC, regs, flags, opcode, cycles, mem writes)
+4. [x] `Cargo` library usable from SoftGBC via path
+5. [x] No PPU code in this crate
 
 ## Relationship to the rest of the stack
 
 ```text
-Chunk B  →  this crate (software CPU oracle)
+Chunk B  →  this crate (software CPU oracle)     ← largely here
 Chunk F  →  Verilog CPU must match these traces
 Chunk H  →  FPGA HIL must match these traces
-Chunk I+ →  SoftGba + dmg-ppu run real games using this CPU
+Chunk I+ →  SoftGBC + dmg-ppu run real games using this CPU
 ```
 
-Build the brain here. Wire the body in SoftGba.
+Build the brain here. Wire the body in SoftGBC (`soc`, timer, PPU, …).

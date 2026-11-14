@@ -1,4 +1,6 @@
-use soc::{run_rom, BlarggResult};
+//! Generic headless SoftGBC runner — any `.gb`; serial text is printed as-is.
+
+use soc::{RunStatus, SoftGbc};
 use std::env;
 use std::process::ExitCode;
 
@@ -13,30 +15,33 @@ fn main() -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(50_000_000);
 
-    match run_rom(&rom, max_steps) {
-        Ok((result, serial)) => {
-            print!("{serial}");
-            if !serial.ends_with('\n') && !serial.is_empty() {
-                println!();
-            }
-            match result {
-                BlarggResult::Passed => {
-                    eprintln!("[softgbc] PASSED");
-                    ExitCode::SUCCESS
-                }
-                BlarggResult::Failed => {
-                    eprintln!("[softgbc] FAILED");
-                    ExitCode::from(1)
-                }
-                BlarggResult::Timeout => {
-                    eprintln!("[softgbc] TIMEOUT after {max_steps} steps");
-                    ExitCode::from(3)
-                }
-            }
-        }
+    let mut gb = match SoftGbc::from_rom_file(&rom) {
+        Ok(gb) => gb,
         Err(e) => {
             eprintln!("[softgbc] load error: {e}");
-            ExitCode::from(2)
+            return ExitCode::from(2);
+        }
+    };
+
+    let status = gb.run(max_steps);
+    let serial = gb.serial_output();
+    print!("{serial}");
+    if !serial.ends_with('\n') && !serial.is_empty() {
+        println!();
+    }
+
+    match status {
+        RunStatus::SerialPassed => {
+            eprintln!("[softgbc] PASSED");
+            ExitCode::SUCCESS
+        }
+        RunStatus::SerialFailed => {
+            eprintln!("[softgbc] FAILED");
+            ExitCode::from(1)
+        }
+        RunStatus::MaxSteps => {
+            eprintln!("[softgbc] TIMEOUT after {max_steps} steps");
+            ExitCode::from(3)
         }
     }
 }

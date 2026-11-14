@@ -24,7 +24,9 @@ pub struct Cpu {
     pub pc: u16,        // Program counter — address of next instruction byte
     pub ime: bool,      // Interrupt Master Enable — (software flip via EI/DI/RETI)
     pub halted: bool,   // CPU stopped fetching until wake (HALT); still advances time
-    ei_delay: bool,     // Internal: “IME should turn on at the next instruction boundary”
+    /// After `EI`, IME turns on when this countdown hits 0 at end of a step.
+    /// `EI` sets it to 2 so the *following* instruction still runs with IME=0.
+    ei_delay: u8,
 }
 
 impl Default for Cpu {
@@ -48,7 +50,7 @@ impl Cpu {
             pc: PC_START,
             ime: false,
             halted: false,
-            ei_delay: false,
+            ei_delay: 0,
         }
     }
 
@@ -301,11 +303,8 @@ impl Cpu {
         res
     }
 
-    pub fn handle_interrupt(&mut self, bus: &mut impl Bus) {
-        let if_ = bus.read8(0xFF0F).unwrap_or(0);
-        let ie = bus.read8(0xFFFF).unwrap_or(0);
-        let pending = if_ & ie & 0x1F; // only 5 IRQ bits
-
+    /// Service the highest-priority bit in `pending` (`IF & IE & 0x1F` from the caller).
+    pub fn handle_interrupt(&mut self, bus: &mut impl Bus, pending: u8) {
         let (vector, ack_mask) = if pending & 0x01 != 0 {
             (0x0040u16, 0x01u8) // VBlank
         } else if pending & 0x02 != 0 {
@@ -321,34 +320,56 @@ impl Cpu {
         };
 
         self.ime = false;
+        let if_ = bus.read8(0xFF0F).unwrap_or(0);
         let _ = bus.write8(0xFF0F, if_ & !ack_mask); // ack accepted IF bit
         self.push16(bus, self.pc);
         self.pc = vector;
     }
 
-    /// Execute one instruction. Returns M-cycles.
+    /// Execute one instruction, or service a pending interrupt.
+    ///
+    /// Returns **M-cycles** (1 M = 4 T). Interrupt dispatch is **5** M-cycles
+    /// (plus **1** extra when leaving HALT into a dispatch).
+    ///
+    /// Order (instruction boundary):
+    /// 1. If `IME` and pending `IF&IE` → dispatch (5 M-cycles), no fetch
+    /// 2. Else fetch/execute one opcode
+    /// 3. Apply delayed `EI` (`IME` turns on *after* the instruction that follows `EI`)
     pub fn step(&mut self, bus: &mut impl Bus) -> u8 {
-        if self.ei_delay {
-            self.ime = true;
-            self.ei_delay = false;
-        }
+        let if_ = bus.read8(0xFF0F).unwrap_or(0);
+        let ie = bus.read8(0xFFFF).unwrap_or(0);
+        let pending = if_ & ie & 0x1F;
 
         if self.halted {
-            return 1;
+            if pending == 0 {
+                return 1; // still halted — time still advances 1 M-cycle
+            }
+            self.halted = false;
+            // IME=0: wake only, leave IF set for software / later EI.
+            if !self.ime {
+                return 1;
+            }
+            // IME=1: wake + dispatch (+1 M-cycle halt-exit overhead).
+            self.handle_interrupt(bus, pending);
+            return 6;
+        }
+
+        if self.ime && pending != 0 {
+            self.handle_interrupt(bus, pending);
+            return 5;
         }
 
         let opcode = self.fetch8(bus);
         let cycles = self.execute(bus, opcode);
 
-        // IF (FF0F) — which interrupts are pending
-        // IE (FFFF) — which are enabled
-        let if_ = bus.read8(0xFF0F).unwrap_or(0);
-        let ie = bus.read8(0xFFFF).unwrap_or(0);
-        let pending = if_ & ie & 0x1F; // only 5 IRQ bits
-        if self.ime && (pending != 0) {
-            self.handle_interrupt(bus);
-            println!("interrupt!");
+        // EI delay: countdown set by EI to 1; after the next instruction completes → IME=1.
+        if self.ei_delay > 0 {
+            self.ei_delay -= 1;
+            if self.ei_delay == 0 {
+                self.ime = true;
+            }
         }
+
         cycles
     }
 
@@ -799,11 +820,12 @@ impl Cpu {
 
             0xF3 => {
                 self.ime = false;
-                self.ei_delay = false;
+                self.ei_delay = 0; // cancel pending EI
                 1
             }
             0xFB => {
-                self.ei_delay = true;
+                // Countdown: this step decrements to 1; following insn end → 0 → IME=1.
+                self.ei_delay = 2;
                 1
             }
 
@@ -1247,11 +1269,172 @@ mod tests {
         let mut bus = DmgBus::new();
         load(&mut bus, 0x0100, &[0x76]);
         let mut cpu = Cpu::new();
-        cpu.step(&mut bus);
+        assert_eq!(cpu.step(&mut bus), 1);
         assert!(cpu.halted);
         let pc = cpu.pc;
-        cpu.step(&mut bus);
+        assert_eq!(cpu.step(&mut bus), 1);
         assert_eq!(cpu.pc, pc); // stays halted
+    }
+
+    /// Spot-check opcode M-cycle lengths used as SoftGBC's master-clock budget.
+    #[test]
+    fn test_opcode_m_cycle_lengths() {
+        let mut bus = DmgBus::new();
+        let mut cpu = Cpu::new();
+        cpu.sp = 0xFFFE;
+
+        load(&mut bus, 0x0100, &[0x00]); // NOP
+        assert_eq!(cpu.step(&mut bus), 1);
+
+        cpu.pc = 0x0100;
+        load(&mut bus, 0x0100, &[0x3E, 0xAA]); // LD A,n
+        assert_eq!(cpu.step(&mut bus), 2);
+
+        cpu.pc = 0x0100;
+        load(&mut bus, 0x0100, &[0x18, 0x00]); // JR e
+        assert_eq!(cpu.step(&mut bus), 3);
+
+        cpu.pc = 0x0100;
+        cpu.set_flags(true, false, false, false); // Z=1
+        load(&mut bus, 0x0100, &[0x20, 0x00]); // JR NZ,e — not taken
+        assert_eq!(cpu.step(&mut bus), 2);
+
+        cpu.pc = 0x0100;
+        cpu.set_flags(false, false, false, false); // Z=0
+        load(&mut bus, 0x0100, &[0x20, 0x00]); // JR NZ,e — taken
+        assert_eq!(cpu.step(&mut bus), 3);
+
+        cpu.pc = 0x0100;
+        cpu.sp = 0xFFFE;
+        load(&mut bus, 0x0100, &[0xCD, 0x00, 0x20]); // CALL nn
+        assert_eq!(cpu.step(&mut bus), 6);
+
+        cpu.pc = 0x2000;
+        load(&mut bus, 0x2000, &[0xC9]); // RET
+        assert_eq!(cpu.step(&mut bus), 4);
+
+        cpu.pc = 0x0100;
+        load(&mut bus, 0x0100, &[0xCB, 0x07]); // RLC A
+        assert_eq!(cpu.step(&mut bus), 2);
+    }
+
+    #[test]
+    fn test_interrupt_dispatch_takes_5_m_cycles() {
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0100, &[0x00]); // would be NOP if we fetched
+        load(&mut bus, 0x0050, &[0x00]); // timer ISR stub
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.sp = 0xFFFE;
+        cpu.ime = true;
+        assert!(bus.poke(0xFFFF, 0x04)); // IE timer
+        assert!(bus.poke(0xFF0F, 0x04)); // IF timer
+
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 5, "IRQ dispatch is 5 M-cycles");
+        assert_eq!(cpu.pc, 0x0050);
+        assert!(!cpu.ime);
+        assert_eq!(bus.read8(0xFF0F), Some(0x00), "IF bit cleared on entry");
+        assert_eq!(cpu.sp, 0xFFFC);
+        let ret = u16::from(bus.read8(0xFFFD).unwrap()) << 8 | u16::from(bus.read8(0xFFFC).unwrap());
+        assert_eq!(ret, 0x0100, "pushed PC is the interrupted fetch address");
+    }
+
+    #[test]
+    fn test_interrupt_priority_vblank_over_timer() {
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0040, &[0x00]);
+        load(&mut bus, 0x0050, &[0x00]);
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.sp = 0xFFFE;
+        cpu.ime = true;
+        assert!(bus.poke(0xFFFF, 0x05)); // IE: VBlank + timer
+        assert!(bus.poke(0xFF0F, 0x05)); // IF: both pending
+
+        assert_eq!(cpu.step(&mut bus), 5);
+        assert_eq!(cpu.pc, 0x0040, "lower vector / VBlank wins");
+        assert_eq!(bus.read8(0xFF0F), Some(0x04), "only VBlank IF bit acked");
+    }
+
+    #[test]
+    fn test_di_blocks_interrupt_if_stays_set() {
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0100, &[0x00]); // NOP
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.ime = false;
+        assert!(bus.poke(0xFFFF, 0x04));
+        assert!(bus.poke(0xFF0F, 0x04));
+
+        assert_eq!(cpu.step(&mut bus), 1); // NOP, not dispatch
+        assert_eq!(cpu.pc, 0x0101);
+        assert_eq!(bus.read8(0xFF0F), Some(0x04), "IF unchanged when IME=0");
+    }
+
+    #[test]
+    fn test_ei_delay_then_interrupt_on_following_boundary() {
+        // EI; NOP completes with IME still off during NOP; IME on afterward;
+        // next step dispatches (5 M-cycles).
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0100, &[0xFB, 0x00]); // EI, NOP
+        load(&mut bus, 0x0050, &[0x00]);
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.sp = 0xFFFE;
+        assert!(bus.poke(0xFFFF, 0x04));
+        assert!(bus.poke(0xFF0F, 0x04)); // pending the whole time
+
+        assert_eq!(cpu.step(&mut bus), 1); // EI
+        assert!(!cpu.ime);
+        assert_eq!(cpu.pc, 0x0101);
+
+        assert_eq!(cpu.step(&mut bus), 1); // NOP — still no dispatch
+        assert!(cpu.ime, "IME enables after instruction following EI");
+        assert_eq!(cpu.pc, 0x0102);
+        assert_eq!(bus.read8(0xFF0F), Some(0x04), "IF still pending");
+
+        assert_eq!(cpu.step(&mut bus), 5); // dispatch
+        assert_eq!(cpu.pc, 0x0050);
+        assert!(!cpu.ime);
+    }
+
+    #[test]
+    fn test_halt_wake_ime_off_leaves_if() {
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0100, &[0x76]); // HALT
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.ime = false;
+        assert_eq!(cpu.step(&mut bus), 1);
+        assert!(cpu.halted);
+
+        assert!(bus.poke(0xFFFF, 0x04));
+        assert!(bus.poke(0xFF0F, 0x04));
+        assert_eq!(cpu.step(&mut bus), 1); // wake only
+        assert!(!cpu.halted);
+        assert_eq!(cpu.pc, 0x0101);
+        assert_eq!(bus.read8(0xFF0F), Some(0x04));
+    }
+
+    #[test]
+    fn test_halt_wake_ime_on_dispatches_6_m_cycles() {
+        let mut bus = DmgBus::new();
+        load(&mut bus, 0x0100, &[0x76]); // HALT
+        load(&mut bus, 0x0050, &[0x00]);
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x0100;
+        cpu.sp = 0xFFFE;
+        cpu.ime = true;
+        assert!(bus.poke(0xFFFF, 0x04));
+        assert_eq!(cpu.step(&mut bus), 1);
+        assert!(cpu.halted);
+
+        assert!(bus.poke(0xFF0F, 0x04));
+        assert_eq!(cpu.step(&mut bus), 6); // 5 dispatch + 1 halt exit
+        assert_eq!(cpu.pc, 0x0050);
+        assert!(!cpu.halted);
+        assert!(!cpu.ime);
     }
 
     #[test]

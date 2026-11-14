@@ -2,6 +2,10 @@
 
 DMG APU — four channels + mixer + NR registers.
 
+## Current status *(2026-11)*
+
+**Not started.** Prefer a mute-safe IO stub before real channels so games don’t hang on NR init.
+
 ## Checklist
 
 - [ ] Register block `FF10`–`FF26`

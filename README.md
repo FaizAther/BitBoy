@@ -302,10 +302,14 @@ LLVM/QEMU forks clone **into** `GBA/` when you need them (see `repos.txt`); they
 
 ## Current status
 
+SoftGBC (software path) is ahead of the LLVM/QEMU/RTL chunks. Details and checklists: [`SoftGBC/README.md`](SoftGBC/README.md).
+
 | Component | Chunk | Status |
 |---|---|---|
-| Tooling & harness | A | Planned |
-| SM83 reference ISS | B | Planned |
+| Tooling & harness | A | Partial — SoftGBC workspace + Blargg assets; `trace-diff` / CI still Planned |
+| SM83 reference ISS (`SoftGBC/sm83-iss`) | B | **In progress** — full ISA + tests; Blargg individuals 10/11 Passed (`02-interrupts` needs SoftGBC timer) |
+| SoftGBC SoC / bus | B/I glue | **In progress** — headless Blargg runner; timer/PPU/MBC not started |
+| DMG PPU crate (`SoftGBC/dmg-ppu`) | I | Stub |
 | LLVM assembler / MC layer | C | Planned |
 | LLVM code-generation backend | D | Planned |
 | QEMU SM83 CPU target | E | Planned |
@@ -313,7 +317,7 @@ LLVM/QEMU forks clone **into** `GBA/` when you need them (see `repos.txt`); they
 | Verilog SM83 CPU | F | Planned |
 | Verilog memory system | G | Planned |
 | FPGA CPU verification (HIL) | H | Planned |
-| PPU | I | Planned |
+| PPU (RTL) | I | Planned |
 | APU | I | Planned |
 | Full FPGA SoC bring-up | J | Planned |
 

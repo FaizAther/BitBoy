@@ -1,6 +1,12 @@
-# dma
+# DMA
 
 OAM DMA via `FF46`.
+
+**Implementation stub:** [`dma.rs`](dma.rs) (`peripherals::dma`).
+
+## Current status *(2026-11)*
+
+**Stub.** SoftGBC Blargg path does not need DMA yet. Instant memcpy is fine for early PPU/sprite tests.
 
 ## Checklist
 

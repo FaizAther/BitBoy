@@ -1,10 +1,27 @@
 # CPU hex fixtures
 
-Hand-written **machine code** programs for building `sm83-iss` **one opcode at a time**.
+Hand-written **machine code** programs for building / debugging `sm83-iss` **one opcode at a time**.
 
-These are **not** Game Boy cartridge images and **not** Intel HEX. They are tiny commented byte lists you grow as you implement instructions.
+These are **not** Game Boy cartridge images and **not** Intel HEX. They are tiny commented byte lists.
 
-Full `.gb` / Blargg ROMs come later. Pokemon Crystal is the wrong tool for this phase.
+Full `.gb` / Blargg ROMs live under [`../../tests/roms/`](../../tests/roms/). Pokemon Crystal is the wrong tool for CPU bring-up.
+
+---
+
+## Current status
+
+| Fixture | Opcodes | Status |
+|---|---|---|
+| `01_nop.hex` | `NOP` | Present (early ladder) |
+| `02_jr_spin.hex` | `NOP`, `JR e` | Present |
+| `03_ld_imm.hex` | `LD r,n` | Present |
+| `04+` | … | **Not required** — ISA finished via `tests/every_opcode.rs` + unit tests |
+
+The fixture ladder was the learning path. New opcodes (if any quirks) can still get a tiny hex file, but Blargg + white-box tests are the authority now.
+
+Loader: `softgbc_core::hex_load` / `DmgBus::from_hex_file` (see `softgbc-core`).
+
+---
 
 ## Format
 
@@ -31,20 +48,19 @@ Rules:
 
 ## How to use
 
-1. Pick the next opcode to implement.
-2. Add or extend a fixture that **only** needs opcodes you already have + the new one.
-3. Run the ISS on that fixture; assert PC / regs / memory.
-4. When green, move to the next opcode.
+1. Pick a bug or missing quirk to exercise.
+2. Keep the fixture **minimal** (only opcodes you need).
+3. Load it, set `PC` to `# entry:`, `step()` and assert.
+4. Prefer Blargg / `every_opcode` for broad coverage.
 
-## Suggested build order (fixtures)
+## Suggested build order (historical)
 
 | File | Opcodes exercised | Goal |
 |---|---|---|
 | `01_nop.hex` | `NOP` | PC advances |
 | `02_jr_spin.hex` | `NOP`, `JR e` | Branch works |
 | `03_ld_imm.hex` | `LD r,n` | Immediate loads |
-| `04_ld_reg.hex` | `LD r,r` | Reg-reg moves |
-| `05_alu_add.hex` | `ADD`, flags | ALU + `F` |
-| … | … | Keep adding |
+| `04_ld_reg.hex` | `LD r,r` | Reg-reg moves *(skipped — covered by tests)* |
+| `05_alu_add.hex` | `ADD`, flags | ALU + `F` *(skipped — covered by tests)* |
 
 Rename / add files as you go; keep each fixture **minimal**.

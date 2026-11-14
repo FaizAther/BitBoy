@@ -1,5 +1,5 @@
-//! SoftGBC SoC glue.
+//! SoftGBC SoC glue — generic machine + CLI binary.
 
-pub mod blargg;
+pub mod machine;
 
-pub use blargg::{run_rom, BlarggBus, BlarggResult};
+pub use machine::{MachineConfig, RunStatus, SoftGbc};

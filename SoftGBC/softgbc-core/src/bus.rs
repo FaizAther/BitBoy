@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use peripherals::{Serial, Timer};
+
 use crate::hex_load::{HexImage, HexLoadError};
 use crate::memory::{Ram, Rom};
 
@@ -11,6 +13,12 @@ pub trait Bus {
 /// Memory map with compile-time ROM / WRAM / HRAM / IO / IE sizes.
 ///
 /// Default DMG-like sizes: `MemoryBus<0x8000, 0x2000, 0x7F, 0x80, 0x1>`.
+///
+/// Peripheral-owned IO (not flat `io[]`):
+/// - `FF01`–`FF02` → [`Serial`]
+/// - `FF04`–`FF07` → [`Timer`]
+///
+/// Call [`Self::tick_m_cycles`] from the SoC after each `cpu.step()`.
 pub struct MemoryBus<
     const ROM_SIZE: usize,
     const WRAM_SIZE: usize,
@@ -21,9 +29,18 @@ pub struct MemoryBus<
     rom: Rom<ROM_SIZE>,
     wram: Ram<WRAM_SIZE>,
     hram: Ram<HRAM_SIZE>,
+    /// VRAM `$8000`–`$9FFF` (raw buffer until PPU owns rendering).
+    pub vram: [u8; 0x2000],
+    /// OAM `$FE00`–`$FE9F`.
+    pub oam: [u8; 0xA0],
     /// I/O registers `$FF00`–`$FF7F` (includes IF at `$FF0F`).
+    /// Timer/serial regs are routed to [`Self::timer`] / [`Self::serial`].
     io: Ram<IO_SIZE>,
     ie: Ram<IE_SIZE>,
+    /// DMG timer — owns DIV/TIMA/TMA/TAC and internal 16-bit DIV.
+    pub timer: Timer,
+    /// Serial link — owns SB/SC and captured output text.
+    pub serial: Serial,
     /// Entry PC from last hex load (`# entry:`), if any.
     pub entry: u16,
 }
@@ -45,9 +62,35 @@ impl<
             rom: Rom::new(),
             wram: Ram::new(),
             hram: Ram::new(),
+            vram: [0x00; 0x2000],
+            oam: [0x00; 0xA0],
             io: Ram::new(),
             ie: Ram::new(),
+            timer: Timer::new(),
+            serial: Serial::new(),
             entry: 0x0100,
+        }
+    }
+
+    /// Bytes captured from serial transfers (`SB`/`SC`).
+    pub fn serial_output(&self) -> &str {
+        &self.serial.output
+    }
+
+    /// Advance the timer (and later other core peripherals) by CPU M-cycles.
+    /// Converts to T-cycles (`× 4`) and ORs any IRQ request bits into `IF` (`FF0F`).
+    pub fn tick_m_cycles(&mut self, m_cycles: u8) {
+        self.tick_t_cycles(u32::from(m_cycles) * 4);
+    }
+
+    /// Advance peripherals by system T-cycles; ORs IRQ lines into `IF`.
+    pub fn tick_t_cycles(&mut self, t_cycles: u32) {
+        let irq = self.timer.tick(t_cycles);
+        if irq.bits != 0 {
+            if let Some(i) = Self::io_index(0xFF0F) {
+                let cur = self.io.read(i).unwrap_or(0);
+                let _ = self.io.write(i, cur | irq.bits);
+            }
         }
     }
 
@@ -126,12 +169,10 @@ impl<
             }
         }
         for addr in 0xFF00u16..=0xFF7F {
-            let local = (addr - 0xFF00) as usize;
-            if local < IO_SIZE {
-                let b = image.mem[addr as usize];
-                if b != 0 {
-                    let _ = bus.io.write(local as u16, b);
-                }
+            let b = image.mem[addr as usize];
+            if b != 0 {
+                // Timer regs go through Timer::write; other IO into the flat buffer.
+                let _ = bus.write8(addr, b);
             }
         }
         for addr in 0xFF80u16..=0xFFFE {
@@ -243,11 +284,14 @@ impl<
                     Some(0xFF)
                 }
             }
+            0x8000..=0x9FFF => Some(self.vram[(addr - 0x8000) as usize]),
             0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
+            0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
+            a if Serial::handles(a) => Some(self.serial.read(a)),
+            a if Timer::handles(a) => Some(self.timer.read(a)),
             0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
             0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
             0xFFFF => self.ie.read(0),
-            // Unmapped / not implemented yet (VRAM, OAM, …)
             _ => Some(0xFF),
         }
     }
@@ -255,12 +299,28 @@ impl<
     fn write8(&mut self, addr: u16, data: u8) -> bool {
         match addr {
             0x0000..=0x7FFF => true, // ROM: ignore write, still "ok"
+            0x8000..=0x9FFF => {
+                self.vram[(addr - 0x8000) as usize] = data;
+                true
+            }
             0xC000..=0xFDFF => {
                 if let Some(i) = Self::wram_index(addr) {
                     self.wram.write(i, data)
                 } else {
                     true
                 }
+            }
+            0xFE00..=0xFE9F => {
+                self.oam[(addr - 0xFE00) as usize] = data;
+                true
+            }
+            a if Serial::handles(a) => {
+                self.serial.write(a, data);
+                true
+            }
+            a if Timer::handles(a) => {
+                self.timer.write(a, data);
+                true
             }
             0xFF00..=0xFF7F => {
                 if let Some(i) = Self::io_index(addr) {
@@ -277,7 +337,6 @@ impl<
                 }
             }
             0xFFFF => self.ie.write(0, data),
-            // VRAM / OAM stubs: ignore for now
             _ => true,
         }
     }
@@ -327,9 +386,19 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_reads_ff() {
-        let bus: DmgBus = MemoryBus::new();
-        assert_eq!(bus.read8(0x8000), Some(0xFF)); // VRAM stub
+    fn vram_round_trip() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0x8000, 0x5A));
+        assert_eq!(bus.read8(0x8000), Some(0x5A));
+    }
+
+    #[test]
+    fn serial_capture_on_transfer_start() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF01, b'P'));
+        assert!(bus.write8(0xFF02, 0x81));
+        assert_eq!(bus.serial_output(), "P");
+        assert_eq!(bus.read8(0xFF02).unwrap() & 0x80, 0);
     }
 
     #[test]
@@ -374,5 +443,28 @@ mod tests {
         assert_eq!(bus.read8(0x0100), Some(0x00));
         assert_eq!(bus.read8(0x0101), Some(0x76));
         assert_eq!(bus.read8(0x0134), Some(b'T'));
+    }
+
+    #[test]
+    fn timer_regs_owned_by_timer_not_flat_io() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF07, 0x05)); // TAC enable + /16
+        assert!(bus.write8(0xFF05, 0x00)); // TIMA
+        assert_eq!(bus.read8(0xFF07).unwrap() & 0x07, 0x05);
+        // Flat IO slot for FF07 must not be the source of truth.
+        assert_eq!(bus.io.read(0x07), Some(0x00));
+    }
+
+    #[test]
+    fn tick_m_cycles_can_set_timer_if_bit() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF07, 0x05));
+        assert!(bus.write8(0xFF05, 0x00));
+        assert!(bus.write8(0xFF04, 0x00)); // reset DIV
+        // 1024 M-cycles = 4096 T = 256×/16 → TIMA overflow
+        for _ in 0..1024 {
+            bus.tick_m_cycles(1);
+        }
+        assert_eq!(bus.read8(0xFF0F).unwrap() & 0x04, 0x04);
     }
 }

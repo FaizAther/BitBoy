@@ -5,3 +5,4 @@ pub mod memory;
 pub use bus::{Bus, DmgBus, MemoryBus};
 pub use hex_load::{HexImage, HexLoadError};
 pub use memory::{Ram, Rom};
+pub use peripherals::{IrqLines, Serial, Timer};

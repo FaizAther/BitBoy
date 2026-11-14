@@ -1,17 +1,37 @@
 # bus
 
-16-bit address decode and routing for CPU and DMA.
+16-bit address decode and routing for CPU (and later DMA).
+
+**Implementation:** `softgbc-core/src/bus.rs` — `Bus` trait + `MemoryBus` / `DmgBus`.
+
+## Current status *(2026-11)*
+
+| Region | Routed? |
+|---|---|
+| `0000`–`7FFF` ROM | **Yes** |
+| `8000`–`9FFF` VRAM | **Yes** (raw buffer) |
+| `C000`–`DFFF` WRAM (+ echo) | **Yes** |
+| `FE00`–`FE9F` OAM | **Yes** (raw buffer) |
+| `FF01`–`FF02` | **`Serial`** (+ output log) |
+| `FF04`–`FF07` | **`Timer`** |
+| Other `FF00`–`FF7F` (incl. `IF`) | Flat IO RAM |
+| `FF80`–`FFFE` HRAM | **Yes** |
+| `FFFF` IE | **Yes** |
+
+```rust
+bus.tick_m_cycles(cpu.step(&mut bus));
+let text = bus.serial_output();
+```
+
+Used by generic `soc::SoftGbc` — not a Blargg-specific bus.
 
 ## Checklist
 
-- [ ] `read8` / `write8` API used by CPU and DMA
-- [ ] Route `0000`–`7FFF` → cartridge ROM
-- [ ] Route `8000`–`9FFF` → VRAM
-- [ ] Route `A000`–`BFFF` → cartridge SRAM (if any)
-- [ ] Route `C000`–`DFFF` → WRAM (+ echo `E000`–`FDFF`)
-- [ ] Route `FE00`–`FE9F` → OAM
-- [ ] Route `FF00`–`FF7F` → IO (joypad, serial, timer, IF, APU, PPU, DMA, …)
-- [ ] Route `FF80`–`FFFE` → HRAM
-- [ ] Route `FFFF` → `IE`
-- [ ] Open-bus / unmapped behaviour documented
-- [ ] DMA-vs-CPU access restrictions hook
+- [x] `read8` / `write8`
+- [x] ROM / WRAM / echo / HRAM / IE
+- [x] VRAM / OAM buffers
+- [x] Timer + serial peripheral routing
+- [x] `tick_m_cycles` → timer → `IF`
+- [ ] PPU-owned LCD regs
+- [ ] Joypad / DMA routing
+- [ ] Open-bus documentation

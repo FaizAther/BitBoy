@@ -1,37 +1,68 @@
 # bus
 
-16-bit address decode and routing for CPU (and later DMA).
+16-bit address decode for CPU (and later DMA).
 
-**Implementation:** `softgbc-core/src/bus.rs` — `Bus` trait + `MemoryBus` / `DmgBus`.
+**Implementation:** `bus.rs` — `Bus` + `DmgBus`.  
+**Refs:** [Pan Docs — Memory map](https://gbdev.io/pandocs/Memory_Map.html)  
 
-## Current status *(2026-11)*
+## Status *(2026-11)*
 
-| Region | Routed? |
+| Region | State |
 |---|---|
-| `0000`–`7FFF` ROM | **Yes** |
-| `8000`–`9FFF` VRAM | **Yes** (raw buffer) |
-| `C000`–`DFFF` WRAM (+ echo) | **Yes** |
-| `FE00`–`FE9F` OAM | **Yes** (raw buffer) |
-| `FF01`–`FF02` | **`Serial`** (+ output log) |
-| `FF04`–`FF07` | **`Timer`** |
-| Other `FF00`–`FF7F` (incl. `IF`) | Flat IO RAM |
-| `FF80`–`FFFE` HRAM | **Yes** |
-| `FFFF` IE | **Yes** |
-
-```rust
-bus.tick_m_cycles(cpu.step(&mut bus));
-let text = bus.serial_output();
-```
-
-Used by generic `soc::SoftGbc` — not a Blargg-specific bus.
+| ROM / WRAM / echo / HRAM / IE | Done |
+| VRAM / OAM buffers | Done (raw) |
+| Timer + serial | Done |
+| `tick` → timer → `IF` | Done |
+| PPU LCD regs / joypad / DMA | Open |
 
 ## Checklist
 
-- [x] `read8` / `write8`
-- [x] ROM / WRAM / echo / HRAM / IE
-- [x] VRAM / OAM buffers
-- [x] Timer + serial peripheral routing
-- [x] `tick_m_cycles` → timer → `IF`
-- [ ] PPU-owned LCD regs
-- [ ] Joypad / DMA routing
-- [ ] Open-bus documentation
+What → Structure → Min test → Done when (pseudocode).
+
+---
+
+- [x] **`read8` / `write8`**  
+- [x] **ROM / WRAM / HRAM / IE**  
+- [x] **VRAM / OAM buffers**  
+- [x] **Timer + serial routing**  
+- [x] **`tick` → timer → `IF`**
+
+---
+
+- [ ] **PPU-owned LCD regs**
+
+  **What:** `FF40`–`FF4B` / LY live on `Ppu`, not flat IO.  
+  **Structure:**
+```text
+DmgBus.ppu
+read FF40..FF4B → ppu.read_io
+tick(t):
+  ppu.tick(t)
+  if take_vblank: IF |= 0x01
+```
+  **Min test:**
+```text
+tick(456) → read(FF44) == 1
+```
+  **Done when:** stub_ly gone; LY moves under SoftGbc.
+
+---
+
+- [ ] **Joypad + DMA routing**
+
+  **What:** `FF00` → Joypad; `FF46` → DMA.  
+  **Structure:** same decode style as timer.  
+  **Min test:** see Joypad / Dma READMEs.  
+  **Done when:** those crate tests pass through the bus.
+
+---
+
+- [ ] **Open-bus policy**
+
+  **What:** unused IO reads return a defined value (often `$FF`).  
+  **Structure:**
+```text
+unmapped IO read → 0xFF
+```
+  **Min test:** read unused IO → `0xFF`.  
+  **Done when:** documented + tested.

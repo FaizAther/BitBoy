@@ -4,6 +4,16 @@ SoftGBC system glue — **generic** machine + `softgbc` CLI.
 
 Wires [`sm83-iss`](../sm83-iss/) with [`softgbc-core`](../softgbc-core/) (`DmgBus` + timer/serial). Blargg (and any other suite) is just a test or a ROM path, not a separate machine type.
 
+### Docs
+
+| Page | Topic |
+|---|---|
+| SoftGBC root **checklist** | [`../README.md`](../README.md) — driver (structure + min test per open item) |
+| PPU checklist | [`../dmg-ppu/README.md`](../dmg-ppu/README.md) |
+| [`docs/t-and-m-cycles.md`](docs/t-and-m-cycles.md) | T-cycle vs M-cycle |
+
+HTML site: `cd ../../docs && ./serve.sh`
+
 ```text
 SoftGbc { cpu, bus: DmgBus }
   step()  = cpu.step + bus.tick_m_cycles
@@ -101,12 +111,16 @@ Generic serial convention (`Passed` / `Failed`), not a Blargg-only runner.
 
 ---
 
-## Step 8 — PPU (`dmg-ppu`)
+## Step 8 — PPU (`dmg-ppu`) ← detail in dmg-ppu checklist
 
-- [ ] PPU owned / ticked by machine
-- [ ] Remove `stub_ly` once LY is real
-- [ ] BG + CRC / PPM
-- [ ] VBlank/STAT → `IF`
+- [ ] **PPU owned / ticked by machine**  
+  **Structure:** `DmgBus { ppu: Ppu }`; `tick_t_cycles` → `ppu.tick(t)`.  
+  **Min test:** unit `dmg-ppu` LY green first; then SoftGbc steps change `FF44`.
+- [ ] **Remove `stub_ly` once LY is real** — `MachineConfig::stub_ly = None`  
+  **Min test:** LCD-wait style ROM/loop exits without poking `FF44` in `reset`.
+- [ ] **VBlank/STAT → `IF`** — `IF |= 0x01` on `take_vblank_irq()`  
+  **Min test:** after LY→144 worth of ticks, `FF0F & 1 != 0`.
+- [ ] **BG + CRC / PPM** — after LY wired (see dmg-ppu checklist)
 
 ---
 

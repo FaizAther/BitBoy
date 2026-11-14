@@ -1,0 +1,15 @@
+# 01_ly_only — LCD line counter only (no pixels)
+#
+# Drive: Ppu::new(); then tick(t) cumulative T-cycles.
+# Expect: ly() as below; take_vblank_irq() true once when entering LY=144.
+#
+# T-cycles per scanline = 456
+# Lines per frame      = 154 (LY 0..153)
+
+# cumulative_T → LY
+0       → 0
+456     → 1
+912     → 2
+65664   → 144      # 144 * 456 — first VBlank line; VBlank IRQ edge
+66120   → 145
+70224   → 0        # 154 * 456 — wrap to top of next frame

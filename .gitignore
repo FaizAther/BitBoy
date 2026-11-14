@@ -12,3 +12,6 @@
 
 # Third-party datasheets (fetch from upstream; do not republish)
 docs/datasheets/*.pdf
+
+# Vendored third-party docs (clone locally; see docs/THIRD_PARTY.md)
+docs/vendor/

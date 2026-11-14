@@ -15,10 +15,12 @@ soc::SoftGbc
 
 | File | Module |
 |---|---|
-| [`src/Timer.README.md`](src/Timer.README.md) | `timer` |
-| [`src/Serial.README.md`](src/Serial.README.md) | `serial` |
+| [`src/Timer.README.md`](src/Timer.README.md) | `timer` — **checklist** with min tests |
+| [`src/Serial.README.md`](src/Serial.README.md) | `serial` — **checklist** with min tests |
 | [`src/Joypad.README.md`](src/Joypad.README.md) | `joypad` |
 | [`src/Dma.README.md`](src/Dma.README.md) | `dma` |
+
+Roadmap checklist: [`../README.md`](../README.md). HTML: `cd ../../docs && ./serve.sh`
 
 ## Shared pattern
 

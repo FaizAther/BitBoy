@@ -34,7 +34,7 @@ cd SoftGBC
 cargo test -p sm83-iss
 ```
 
-Blargg individuals (except interrupts) already pass through `soc` using this CPU. Remaining SoftGBC gap is **timer**, not missing opcodes.
+Blargg `cpu_instrs` individuals (incl. interrupts) pass through `soc` using this CPU. SoftGBC gap now is **PPU**, not missing opcodes.
 
 ---
 
@@ -52,9 +52,22 @@ Blargg individuals (except interrupts) already pass through `soc` using this CPU
 - [x] Full instruction set including `CB` prefix
 - [x] Interrupts, `EI` / `DI` / `HALT` / `STOP` (basic)
 - [x] Injectable memory via a `Bus` trait
-- [ ] Instruction tracing (JSONL) and optional cycle-accurate timing polish
-- [ ] Dedicated CLI binary: `sm83-iss <rom> [--trace out.jsonl]`
 - [x] Hex fixtures under [`fixtures/`](fixtures/) (early ladder; still useful)
+
+- [ ] **Instruction tracing (JSONL)**
+
+  **Structure:**
+```rust
+#[derive(Serialize)]
+struct TraceLine { pc: u16, op: u8, m_cycles: u8, a: u8, /* … */ }
+// after each step: writeln!(trace, "{}", serde_json::to_string(&line)?)
+```
+  **Min test:** step `NOP` once → one JSON line with `pc` before/after and `m_cycles == 1`.
+
+- [ ] **Dedicated CLI: `sm83-iss <rom> [--trace out.jsonl]`**
+
+  **Structure:** tiny binary in this crate or `soc` flag; load hex/ROM, loop `step`, optional trace file.  
+  **Min test:** `cargo run -p sm83-iss -- fixtures/01_….hex --steps 3` exits 0; with `--trace` file non-empty.
 
 ## Instruction-by-instruction workflow
 

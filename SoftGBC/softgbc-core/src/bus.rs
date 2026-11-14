@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use dmg_ppu::DmgPpu;
 use peripherals::{Serial, Timer};
 
 use crate::hex_load::{HexImage, HexLoadError};
@@ -37,6 +38,7 @@ pub struct MemoryBus<
     /// Timer/serial regs are routed to [`Self::timer`] / [`Self::serial`].
     io: Ram<IO_SIZE>,
     ie: Ram<IE_SIZE>,
+    pub ppu: DmgPpu,
     /// DMG timer — owns DIV/TIMA/TMA/TAC and internal 16-bit DIV.
     pub timer: Timer,
     /// Serial link — owns SB/SC and captured output text.
@@ -66,6 +68,7 @@ impl<
             oam: [0x00; 0xA0],
             io: Ram::new(),
             ie: Ram::new(),
+            ppu: DmgPpu::new(),
             timer: Timer::new(),
             serial: Serial::new(),
             entry: 0x0100,
@@ -85,7 +88,7 @@ impl<
 
     /// Advance peripherals by system T-cycles; ORs IRQ lines into `IF`.
     pub fn tick_t_cycles(&mut self, t_cycles: u32) {
-        let irq = self.timer.tick(t_cycles);
+        let irq = self.timer.tick(t_cycles).merge(self.ppu.tick(t_cycles));
         if irq.bits != 0 {
             if let Some(i) = Self::io_index(0xFF0F) {
                 let cur = self.io.read(i).unwrap_or(0);
@@ -466,5 +469,28 @@ mod tests {
             bus.tick_m_cycles(1);
         }
         assert_eq!(bus.read8(0xFF0F).unwrap() & 0x04, 0x04);
+    }
+
+    #[test]
+    fn tick_t_cycles_can_set_vblank_if_bit() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert_eq!(bus.read8(0xFF0F).unwrap() & 0x01, 0x00);
+
+        // 144 scanlines × 456 T → LY becomes 144 → VBlank request (IF bit 0)
+        bus.tick_t_cycles(144 * 456);
+
+        assert_eq!(bus.ppu.ly, 144);
+        assert_eq!(bus.read8(0xFF0F).unwrap() & 0x01, 0x01);
+    }
+
+    #[test]
+    fn tick_before_vblank_does_not_require_vblank_if() {
+        let mut bus: DmgBus = MemoryBus::new();
+        // Still on visible lines (LY 0..143) after 143 full scanlines
+        bus.tick_t_cycles(143 * 456);
+        assert_eq!(bus.ppu.ly, 143);
+        // IF bit 0 should only be set when VBlank is *taken* (LY→144).
+        // If this fails, PPU is raising VBlank on every line advance.
+        assert_eq!(bus.read8(0xFF0F).unwrap() & 0x01, 0x00);
     }
 }

@@ -18,6 +18,16 @@ Software Game Boy (DMG-class) in Rust — build the **easiest wins first**, then
 Detailed SoC wiring order: [`soc/README.md`](soc/README.md).  
 This file is the **whole SoftGBC roadmap** — sorted by effort, not by “complete hardware purity.”
 
+### Documentation map
+
+| Kind | Where |
+|---|---|
+| **Item pattern** | What → Structure → Min test → Done when (pseudocode; softgbc-hands-off skill) |
+| **Drivers** | Checklists in this file + crate READMEs (`dmg-ppu`, `Timer`, `Serial`, `interrupt`, …) |
+| HTML / PDFs | Repo [`../docs/`](../docs/) — `cd ../docs && ./serve.sh` |
+
+**Architecture in one line:** `SoftGbc::step` → `cpu.step` → `bus.tick(m*4)` → devices (`Timer` / later `Ppu`) request IRQ bits → bus ORs `IF`. No threads.
+
 ---
 
 ## Current status *(2026-11)*
@@ -31,9 +41,9 @@ This file is the **whole SoftGBC roadmap** — sorted by effort, not by “compl
 | `sm83-iss` | **Done for ISA** — full base + `CB`, `EI`/`DI`/`HALT`, IRQ vectoring |
 | `peripherals` | Timer + serial (capture); joypad/dma stubs |
 | Blargg `cpu_instrs` (individuals) | **11/11 Passed** via `cargo test -p soc` |
-| PPU / MBC / APU | **Not started** (`dmg-ppu` empty lib) |
+| PPU / MBC / APU | **PPU next** — drive [`dmg-ppu` checklist](dmg-ppu/README.md); MBC/APU later |
 
-**Immediate next step:** PPU LY → BG framebuffer (replace stub `LY=144` in `MachineConfig`).
+**Immediate next step:** PPU checklist — LY unit tests → wire SoftGBC (drop `stub_ly`) → BG.
 
 **How to repro Blargg:**
 
@@ -205,91 +215,244 @@ Hex fixtures under `sm83-iss/fixtures/` remain for focused debugging.
 
 | Individual ROM | Result |
 |---|---|
-| `01-special` … `11-op a,(hl)` except `02` | **Passed** |
-| `02-interrupts` | **Failed** — needs timer IRQ |
+| `01` … `11` (incl. `02-interrupts`) | **Passed** |
 | `cpu_instrs.gb` (combined 64 KiB) | **Not runnable** on 32 KiB ROM window (needs banking / larger ROM) |
 
 ---
 
-### 6. Interrupts + timer *(medium-easy once CPU works)* — **IN PROGRESS** ← **you are here**
+### 6. Interrupts + timer *(medium-easy once CPU works)* — **DONE for Blargg 02**
 
-- [x] `IF`/`IE` on the bus (`DmgBus` / Blargg overlay)
+- [x] `IF`/`IE` on the bus (`DmgBus`)
 - [x] CPU accepts IRQ vectors (`sm83-iss`)
 - [x] Master-clock SoC loop ticks `peripherals::Timer` after each `cpu.step()`
-- [x] Timer overflow sets `IF` bit 2 (coarse — see [`peripherals/src/Timer.README.md`](peripherals/src/Timer.README.md))
+- [x] Timer overflow sets `IF` bit 2 — see [`peripherals/src/Timer.README.md`](peripherals/src/Timer.README.md) checklist for accuracy follow-ups
 - [x] `02-interrupts.gb` **Passed**
 
-**Done when:** `02-interrupts.gb` (or a Mooneye timer ROM) behaves. **Met for Blargg `02`.**
-
-Skip serial IRQ and joypad IRQ until later. Model the timer as **separate hardware** advanced by the SoC, not a thread and not “inside” the CPU.
+**Structure:** `Timer` owns regs + `tick(t)` → `IrqLines`; `DmgBus` ORs into `IF`; CPU services between instructions. Not a thread.
 
 ---
 
-### 7. OAM DMA stub-to-real *(easy → medium)*
+### 7. OAM DMA *(easy → medium)*
 
-- [ ] Easy: on write `FF46`, instantly `memcpy` 160 bytes to OAM
-- [ ] Later: spread across ~160 M-cycles + CPU access restrictions
+Detail: [`peripherals/src/Dma.README.md`](peripherals/src/Dma.README.md).
 
-**Done when:** OAM contains the copied bytes after a DMA trigger.
+- [ ] **Instant DMA**
 
----
+  **What:** write `FF46` copies 160 bytes → OAM.  
+  **Structure:**
+```text
+src = FF46_value << 8
+for i in 0..159: oam[i] = read(src + i)
+```
+  **Min test:**
+```text
+mem[C000]=0xAB → write FF46=0xC0 → read(FE00)==0xAB
+```
+  **Done when:** smoke test green.
 
-### 8. PPU “lights on” before perfection *(medium)*
-
-Don’t start with sprites. `dmg-ppu` is still an empty crate.
-
-1. **LY counter only** — tick 456 T-cycles → increment LY; VBlank IRQ at LY=144  
-2. **BG framebuffer** — draw background tiles, ignore window/sprites  
-3. **CRC / PPM dump** — `softgbc rom --frames 1 --dump frame.ppm`  
-4. **Window**, then **sprites**, then `dmg-acid2`
-
-*(Today `MachineConfig::stub_ly = Some(144)` so LCD waits exit — not a real PPU.)*
-
-**Done when (early):** LY advances + VBlank fires + a non-black BG frame dumps.  
-**Done when (later):** `dmg-acid2` / agreed visual tests.
-
----
-
-### 9. MBC1 only when a ROM needs it *(easy–medium)*
-
-Stay ROM-only until your target game (or combined Blargg) banks.
-
-- [ ] Detect cart type from header
-- [ ] MBC1 ROM banking (or enlarge ROM window for 64 KiB `cpu_instrs.gb`)
-- [ ] SRAM + `.sav` only if that game needs saves
-
-**Done when:** your chosen banked ROM reads the right banks.
+- [ ] **Timed DMA (later)**  
+  **What:** ~160 M-cycles + access rules.  
+  **Done when:** see Dma README.
 
 ---
 
-### 10. Joypad + a window *(medium, very motivating)*
+### 8. PPU “lights on” *(medium)* ← **you are here**
 
-- [ ] `FF00` with keyboard → button bits
-- [ ] Thin SDL/winit loop: run to VBlank → blit 160×144 → poll keys
-- [ ] Keep `--headless` for CI
-
-**Done when:** you can move in a simple homebrew or boot screen of a commercial game.
+**Driver (same checklist):** [`dmg-ppu/README.md`](dmg-ppu/README.md).  
+Scanline = **456 T**; frame = **154** lines (`0..143` draw, `144..153` VBlank). Today SoftGBC fakes LY with `stub_ly = 144`.
 
 ---
 
-### 11. APU as silence, then noise *(easy stub → hard)*
+- [ ] **`tick(t)` advances LY**
 
-- [ ] Easy: NR registers writable; audio callback outputs zeros
-- [ ] Then channel 2 or 1 square only
-- [ ] Then wave + noise + mixer
+  **What:** LY counts scanlines from time alone (no ROM).  
+  **Structure:**
+```text
+Ppu: ly, line_cycles          # line_cycles 0..455
 
-**Done when (early):** games boot without spinning on audio regs.  
-**Done when (later):** music is recognizable.
+tick(n):
+  line_cycles += n
+  while line_cycles >= 456:
+    line_cycles -= 456
+    ly += 1
+    if ly == 154: ly = 0
+```
+  **Min test:**
+```text
+tick(455) → ly == 0
+tick(1)   → ly == 1
+fixture: 0→0, 456→1, 912→2, 65664→144, 70224→0
+```
+  **Done when:** [`dmg-ppu/fixtures/01_ly_only.expected.txt`](dmg-ppu/fixtures/01_ly_only.expected.txt) green.
+
+---
+
+- [ ] **VBlank IRQ edge at LY=144**
+
+  **What:** one request when LY *becomes* 144 (not every tick on 144).  
+  **Structure:**
+```text
+when ly becomes 144: vblank_irq = true
+take_vblank_irq(): return and clear flag
+```
+  **Min test:**
+```text
+tick(143*456) → take == false
+tick(456) → ly==144, take==true once
+```
+  **Done when:** edge-only behaviour locked.
+
+---
+
+- [ ] **IO `FF40`–`FF4B` (LY = `FF44`)**
+
+  **What:** LCD regs; `FF44` reads as LY.  
+  **Structure:**
+```text
+read_io / write_io
+FF44 read → ly
+```
+  **Min test:**
+```text
+write FF40 LCD-on → read back
+read FF44 == ly
+```
+  **Done when:** LCDC round-trip; LY readable.
+
+---
+
+- [ ] **Modes 0–3 / STAT (optional early, needed before acid2)**
+
+  **What:** per-line OAM search / draw / HBlank; VBlank is mode 1. STAT can request `IF` bit 1.  
+  **Structure:**
+```text
+within a line (456 T): advance mode by cycle budget
+take_stat_irq on enabled edges (mode / LYC)
+```
+  **Min test:**
+```text
+after N T into a visible line, mode matches expected
+LYC==LY with STAT enable → IF bit 1
+```
+  **Done when:** mode + one STAT path tested; see [`interrupt/README.md`](interrupt/README.md).
+
+---
+
+- [ ] **Background → framebuffer + CRC**
+
+  **What:** BG tiles → 160×144; golden hash.  
+  **Structure:**
+```text
+SCX/SCY + LCDC → tile in VRAM → BGP → framebuffer
+frame_crc = hash(framebuffer)
+```
+  **Min test:**
+```text
+one solid tile, BG on → one frame → frame_crc == GOLDEN
+```
+  **Done when:** golden checked in under `dmg-ppu/fixtures/`.
+
+---
+
+- [ ] **Window**
+
+  **What:** WY/WX window layer over BG.  
+  **Structure:** when active, fetch window map instead of BG.  
+  **Min test:** known rect → pixel or CRC.  
+  **Done when:** window golden matches.
+
+---
+
+- [ ] **Sprites**
+
+  **What:** OAM objects composited with BG.  
+  **Structure:** OAM scan → merge (priority / transparency).  
+  **Min test:** one OBJ → expected non-BG pixel.  
+  **Done when:** sprite golden or acid2 progress.
+
+---
+
+- [ ] **Wire SoftGBC / remove `stub_ly`**
+
+  **What:** real LY on the bus; VBlank into `IF`.  
+  **Structure:**
+```text
+DmgBus owns Ppu
+tick(t): timer.tick; ppu.tick; if take_vblank: IF |= 0x01
+FF44 → ppu.ly()
+stub_ly = none
+```
+  **Min test:**
+```text
+SoftGbc steps → FF44 changes
+IME+IE VBlank → PC can reach $0040
+```
+  **Done when:** LCD waits work without stub.
+
+---
+
+- [ ] **`dmg-acid2` / visual golden**
+
+  **What:** last v1 graphics gate.  
+  **Min test:** ROM/CRC matches agreed reference.  
+  **Done when:** noted green in status table.
+
+---
+
+### 9. MBC1 when a ROM needs it
+
+Detail: [`cartridge/README.md`](cartridge/README.md).
+
+- [ ] **Parse header / cart type**  
+  **What:** read `0x0147` etc.  
+  **Min test:** known `.gb` → expected type/title.  
+  **Done when:** parse API exists.
+
+- [ ] **MBC1 banking (or larger ROM window)**  
+  **Min test:** two banks differ after switch.  
+  **Done when:** chosen banked ROM runs.
+
+- [ ] **SRAM + `.sav` if needed**  
+  **Done when:** save round-trips.
+
+---
+
+### 10. Joypad + window
+
+Detail: [`Joypad.README.md`](peripherals/src/Joypad.README.md).
+
+- [ ] **`FF00` from host keys**  
+  **What:** active-low nibble for selected group.  
+  **Min test:** press Down → correct bit low.  
+  **Done when:** bus read matches host.
+
+- [ ] **Window: VBlank → blit → poll**  
+  **What:** host UI; SoftGbc stays headless-capable.  
+  **Done when:** you see a frame and can press keys.
+
+- [ ] **Keep headless CI**  
+  **Done when:** Blargg still runs without a window.
+
+---
+
+### 11. APU (mute first)
+
+Detail: [`apu/README.md`](apu/README.md).
+
+- [ ] **Mute-safe NR stub**  
+  **What:** `FF10`–`FF3F` writable; audio out = silence.  
+  **Min test:** write `FF26`, read back; samples stay 0.  
+  **Done when:** games don’t hang on audio init.
+
+- [ ] **Square / wave / noise** — see apu checklist.
 
 ---
 
 ### 12. Stubs & polish last *(easy individually)*
 
-Only when something blocks a game:
-
-- [x] `serial` — accept `SB`/`SC` writes for Blargg (in SoC Blargg bus)
-- [ ] Move serial stub into `serial/` crate if desired
-- [ ] `boot` — optional; skip-boot register init is usually enough
+- [x] Serial capture for Blargg (`SB`/`SC`) — see [`Serial.README.md`](peripherals/src/Serial.README.md) checklist for IRQ
+- [ ] Serial transfer-complete → `IF` bit 3 (checklist on Serial README)
+- [ ] `boot` — optional; skip-boot is usually enough
 - [ ] Better DMA timing, STAT edge cases, PPU quirks
 - [ ] MBC3/5, RTC, rumble — per-game
 
@@ -302,8 +465,8 @@ Only when something blocks a game:
 | 1 | Workspace + ROM load | **Done** |
 | 2 | Bus/WRAM + CPU steps | **Done** |
 | 3 | Expand opcodes toward Blargg | **Done** |
-| 4 | Timer + IRQs; Blargg `02` + full individuals green | **Next** |
-| 5 | Instant DMA + PPU LY/BG + PPM dump | Todo |
+| 4 | Timer + IRQs; Blargg `02` + full individuals green | **Done** |
+| 5 | PPU LY (checklist in `dmg-ppu`) + wire SoftGBC; then BG/PPM | **Next** |
 | 6 | Window + joypad; first playable ROM | Todo |
 | 7+ | MBC as needed, sprites, APU, quirks | Todo |
 

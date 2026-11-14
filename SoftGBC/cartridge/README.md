@@ -1,26 +1,82 @@
 # cartridge
 
-ROM image + MBC + external battery RAM.
+ROM image + MBC + battery RAM.
 
-## Current status *(2026-11)*
+**Refs:** [Pan Docs — Header](https://gbdev.io/pandocs/The_Cartridge_Header.html) · [GBEDG — MBCs](https://github.com/Ashiepaws/GBEDG/blob/master/mbcs/index.md)  
 
-**Stub crate** (`lib.rs` placeholder). SoftGBC loads `.gb` files today via **`softgbc-core::DmgBus::from_rom_file`** (first 32 KiB into the ROM window). No header dump CLI and no MBC.
+## Status *(2026-11)*
 
-Needed soon for:
-
-- Combined Blargg `cpu_instrs.gb` (64 KiB) — banking or larger ROM
-- Any commercial/homebrew that banks
+Stub. SoftGBC loads `.gb` via `DmgBus::from_rom_file` (32 KiB window).
 
 ## Checklist
 
-- [x] Load `.gb` into a ROM image *(via `softgbc-core` for now)*
-- [ ] Move / wrap load behind this crate’s API
-- [ ] Parse header (title, cart type, ROM/RAM size)
-- [ ] ROM-only cart type
-- [ ] MBC1 (ROM/RAM banking)
-- [ ] MBC3 (optional RTC later)
-- [ ] MBC5
-- [ ] External SRAM read/write when enabled
-- [ ] Persist SRAM to disk (`.sav`)
-- [ ] Bus hooks for `0000`–`7FFF` and `A000`–`BFFF`
-- [ ] Reject / warn on unsupported cart types
+What → Structure → Min test → Done when (pseudocode).
+
+---
+
+- [x] **Load `.gb` bytes** *(via softgbc-core today)*
+
+---
+
+- [ ] **Cartridge API wrap**
+
+  **What:** this crate owns load + header.  
+  **Structure:**
+```text
+Cartridge { data, header }
+from_path(path) → Cartridge
+```
+  **Min test:** load Blargg `01-special.gb` → data length ≥ 0x150.  
+  **Done when:** SoftGBC can construct from this API.
+
+---
+
+- [ ] **Parse header**
+
+  **What:** title, cart type `0x0147`, size codes.  
+  **Structure:**
+```text
+Header: title, cart_type, rom_size_code, ram_size_code
+```
+  **Min test:** known ROM → expected type / non-empty title.  
+  **Done when:** fields match file bytes.
+
+---
+
+- [ ] **ROM-only mapping**
+
+  **What:** type `$00` — flat map `0000–7FFF`.  
+  **Structure:** read → `data[addr]`; write ROM ignored.  
+  **Min test:** read `0x0100` == file byte.  
+  **Done when:** Blargg individuals still run.
+
+---
+
+- [ ] **MBC1 banking**
+
+  **What:** writes select ROM/RAM banks (GBEDG MBC1).  
+  **Structure:**
+```text
+on write to low ROM:
+  update rom_bank / ram_enable / mode
+read 4000–7FFF from banked region of data
+```
+  **Min test:** switch bank → `read(0x4000)` changes on 64K+ image.  
+  **Done when:** combined Blargg or target game banks correctly.
+
+---
+
+- [ ] **SRAM + `.sav`**
+
+  **What:** `A000–BFFF` when enabled; persist file.  
+  **Structure:** enable → RAM r/w; save/load path.  
+  **Min test:** write RAM → save → reload → same byte.  
+  **Done when:** round-trip works for one cart type.
+
+---
+
+- [ ] **Bus hooks + reject unsupported**
+
+  **What:** `DmgBus` uses Cartridge; warn on bad type.  
+  **Min test:** unsupported type → error or clear warning.  
+  **Done when:** documented behaviour.

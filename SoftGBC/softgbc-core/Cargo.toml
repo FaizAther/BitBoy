@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 peripherals = { path = "../peripherals" }
+dmg-ppu = { path = "../dmg-ppu" }

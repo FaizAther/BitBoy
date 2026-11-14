@@ -1,0 +1,56 @@
+:root {
+  --bg: #f7f4ef; --panel: #fffdf8; --ink: #1c1a16; --muted: #5c574e;
+  --line: #d9d2c4; --accent: #0b5f4b; --code-bg: #efe8db;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  color: var(--ink);
+  background: linear-gradient(160deg, #efe7d8 0%, var(--bg) 40%, #e7eef0 100%);
+  min-height: 100vh;
+}
+.layout { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; min-height: 100vh; }
+.sidebar {
+  background: var(--panel); border-right: 1px solid var(--line);
+  padding: 1.25rem 1rem 2rem; position: sticky; top: 0; height: 100vh; overflow: auto;
+}
+.brand { display: block; font-weight: 700; font-size: 1.15rem; color: var(--accent); text-decoration: none; margin-bottom: 1rem; }
+.nav-section { margin: 1.1rem 0 0.35rem; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { margin: 0.15rem 0; }
+.sidebar a { color: var(--ink); text-decoration: none; font-size: 0.95rem; }
+.sidebar a:hover { color: var(--accent); text-decoration: underline; }
+.muted { text-transform: none; letter-spacing: 0; font-size: 0.85em; }
+main { padding: 1.5rem 2rem 3rem; max-width: 52rem; }
+.crumb { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
+.content {
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem 1.5rem 2rem;
+}
+.content h1 { margin-top: 0; }
+.content a { color: var(--accent); }
+.content img { max-width: 100%; height: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 0.35rem; }
+.content pre, .fixture {
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 0.85rem 1rem; overflow-x: auto;
+  font-family: "IBM Plex Mono", "Consolas", monospace; font-size: 0.88rem;
+}
+.content code { font-family: "IBM Plex Mono", "Consolas", monospace; font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 3px; }
+.content pre code { background: none; padding: 0; }
+.content table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.95rem; }
+.content th, .content td { border: 1px solid var(--line); padding: 0.4rem 0.55rem; text-align: left; vertical-align: top; }
+.content th { background: #efe8db; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem; margin: 1.25rem 0; }
+.card {
+  display: block; padding: 1rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); text-decoration: none; color: inherit;
+}
+.card:hover { border-color: var(--accent); }
+.card strong { display: block; color: var(--accent); margin-bottom: 0.35rem; }
+.card span { color: var(--muted); font-size: 0.92rem; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  main { padding: 1rem; }
+}

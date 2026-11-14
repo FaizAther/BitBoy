@@ -9,6 +9,9 @@ version = "0.1.0"
 [[package]]
 name = "dmg-ppu"
 version = "0.1.0"
+dependencies = [
+ "peripherals",
+]
 
 [[package]]
 name = "peripherals"
@@ -33,5 +36,6 @@ dependencies = [
 name = "softgbc-core"
 version = "0.1.0"
 dependencies = [
+ "dmg-ppu",
  "peripherals",
 ]

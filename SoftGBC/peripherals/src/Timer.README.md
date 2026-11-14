@@ -134,25 +134,80 @@ IME can stay off: the test only **reads IF**, it does not require the ISR to run
 - [x] TIMA overflow → reload TMA + set `IF` bit 2
 - [x] `02-interrupts.gb` **Passed**
 
-**Accuracy follow-ups**
-
-- [ ] Full falling-edge AND model (all four rates) — basic model present; verify all rates
-- [ ] DIV-reset / TAC-disable spurious increments
-- [ ] 4 T-cycle overflow delay + TIMA-write cancel
-- [ ] Mooneye timer / `instr_timing` / `mem_timing` as needed
+**Accuracy follow-ups** — What → Structure → Min test → Done when  
+**Refs:** [GBEDG — Timers](https://github.com/Ashiepaws/GBEDG/blob/master/timers/index.md)
 
 ---
 
-## API
+- [ ] **All four TAC rates (falling-edge)**
 
-```rust
-use peripherals::{Timer, IrqLines};
-
-impl Timer {
-    pub fn tick(&mut self, t_cycles: u32) -> IrqLines; // OR `.bits` into IF
-    pub fn read(&self, addr: u16) -> u8;               // FF04..=FF07
-    pub fn write(&mut self, addr: u16, data: u8);
-}
+  **What:** TIMA bumps on falling edge of selected DIV bit while TAC enable.  
+  **Structure:**
+```text
+rates: 00→DIV bit9 (/1024), 01→bit3 (/16), 10→bit5 (/64), 11→bit7 (/256)
+on each T: if enable and selected bit 1→0: TIMA += 1
 ```
+  **Min test:**
+```text
+TAC = enable + /16, TIMA = 0
+tick(15) → TIMA still 0
+tick(1)  → TIMA == 1
+```
+  **Done when:** all four rates have a period test.
 
-SoC owns `Timer` inside the bus, routes IO, ORs `IrqLines` into `IF`.
+---
+
+- [ ] **DIV-reset / TAC-disable edges**
+
+  **What:** writing DIV (or disabling TAC) can cause a spurious TIMA edge (GBEDG).  
+  **Structure:** model falling edge when reset clears a high tap bit.  
+  **Min test:**
+```text
+arrange selected DIV bit high
+write FF04 = 0
+assert TIMA behaviour matches your documented rule
+```
+  **Done when:** behaviour matches GBEDG note you chose.
+
+---
+
+- [ ] **Overflow delay + TIMA-write cancel**
+
+  **What:** after TIMA wraps, ~4 T before reload/IF; write TIMA in window cancels.  
+  **Structure:**
+```text
+on TIMA 0xFF→0x00: start 4-T delay
+after delay: TIMA = TMA, IF bit 2
+if TIMA written during delay: cancel reload/IF
+```
+  **Min test:**
+```text
+force overflow → within 4 T write TIMA
+assert IF bit 2 clear and TIMA == written value
+```
+  **Done when:** cancel window tested.
+
+---
+
+- [ ] **Mooneye / timing ROMs**
+
+  **What:** external ROMs as acceptance.  
+  **Structure:** SoftGbc run until serial Passed/Failed.  
+  **Min test:**
+```text
+run timer / instr_timing / mem_timing ROM
+expect serial "Passed"
+```
+  **Done when:** chosen suite green.
+
+---
+
+## Shape (pseudocode)
+
+```text
+Timer:
+  tick(t) → maybe IRQ bit 2
+  read/write FF04..FF07
+
+bus ORs IRQ bits into IF after tick
+```

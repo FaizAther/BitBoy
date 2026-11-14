@@ -19,6 +19,10 @@ pub struct IrqLines {
 
 impl IrqLines {
     pub const NONE: Self = Self { bits: 0 };
+    
+    pub fn vblank() -> Self {
+        Self { bits: IF_VBLANK }
+    }
 
     pub fn timer() -> Self {
         Self { bits: IF_TIMER }

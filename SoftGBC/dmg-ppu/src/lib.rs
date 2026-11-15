@@ -433,8 +433,9 @@ impl ShadeFrameSource for DmgPpu {
 }
 
 impl IoDevice for DmgPpu {
+    /// LCD regs `$FF40`–`$FF4B` **except** `$FF46` (OAM DMA — owned by `peripherals::Dma`).
     fn handles(addr: u16) -> bool {
-        matches!(addr, 0xFF40..=0xFF4B)
+        matches!(addr, 0xFF40..=0xFF45 | 0xFF47..=0xFF4B)
     }
 
     fn read(&self, addr: u16) -> u8 {
@@ -445,7 +446,6 @@ impl IoDevice for DmgPpu {
             0xFF43 => self.SCX,
             0xFF44 => self.ly,
             0xFF45 => self.LYC,
-            0xFF46 => self.DMA,
             0xFF47 => self.BGP,
             0xFF48 => self.OBP0,
             0xFF49 => self.OBP1,
@@ -470,7 +470,6 @@ impl IoDevice for DmgPpu {
                 self.LYC = data;
                 let _ = self.update_stat_edges();
             }
-            0xFF46 => self.DMA = data,
             0xFF47 => self.BGP = data,
             0xFF48 => self.OBP0 = data,
             0xFF49 => self.OBP1 = data,
@@ -540,6 +539,7 @@ mod tests {
         assert!(DmgPpu::handles(0xFF40));
         assert!(DmgPpu::handles(0xFF44));
         assert!(DmgPpu::handles(0xFF4B));
+        assert!(!DmgPpu::handles(0xFF46), "FF46 is peripherals::Dma");
         assert!(!DmgPpu::handles(0xFF3F));
         assert!(!DmgPpu::handles(0xFF4C));
         assert!(!DmgPpu::handles(0xFF0F));

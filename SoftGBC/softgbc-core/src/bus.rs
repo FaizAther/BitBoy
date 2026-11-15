@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use dmg_ppu::DmgPpu;
-use peripherals::{IoDevice, Joypad, Serial, Timer};
+use peripherals::dma::OAM_DMA_LEN;
+use peripherals::{Dma, IoDevice, Joypad, Serial, Timer};
 
 use crate::hex_load::{HexImage, HexLoadError};
 use crate::memory::{Ram, Rom};
@@ -19,7 +20,8 @@ pub trait Bus {
 /// - `FF00` → [`Joypad`]
 /// - `FF01`–`FF02` → [`Serial`]
 /// - `FF04`–`FF07` → [`Timer`]
-/// - `FF40`–`FF4B` → [`DmgPpu`]
+/// - `FF40`–`FF45`, `FF47`–`FF4B` → [`DmgPpu`]
+/// - `FF46` → [`Dma`] (instant OAM copy)
 ///
 /// Call [`Self::tick_m_cycles`] from the SoC after each `cpu.step()`.
 pub struct MemoryBus<
@@ -43,6 +45,8 @@ pub struct MemoryBus<
     pub ppu: DmgPpu,
     /// Joypad — owns `P1` / `FF00` (host feeds pressed keys).
     pub joypad: Joypad,
+    /// OAM DMA — owns `FF46`; write triggers instant 160-byte copy → OAM.
+    pub dma: Dma,
     /// DMG timer — owns DIV/TIMA/TMA/TAC and internal 16-bit DIV.
     pub timer: Timer,
     /// Serial link — owns SB/SC and captured output text.
@@ -74,6 +78,7 @@ impl<
             ie: Ram::new(),
             ppu: DmgPpu::new(),
             joypad: Joypad::new(),
+            dma: Dma::new(),
             timer: Timer::new(),
             serial: Serial::new(),
             entry: 0x0100,
@@ -83,6 +88,19 @@ impl<
     /// Bytes captured from serial transfers (`SB`/`SC`).
     pub fn serial_output(&self) -> &str {
         &self.serial.output
+    }
+
+    /// Instant OAM DMA: copy 160 bytes from `dma.page << 8` into [`Self::oam`].
+    fn run_oam_dma_instant(&mut self) {
+        let base = self.dma.src_base();
+        let mut buf = [0u8; OAM_DMA_LEN];
+        for (i, slot) in buf.iter_mut().enumerate() {
+            *slot = self
+                .read8(base.wrapping_add(i as u16))
+                .unwrap_or(0xFF);
+        }
+        self.oam[..OAM_DMA_LEN].copy_from_slice(&buf);
+        self.dma.active = false;
     }
 
     /// Advance the timer (and later other core peripherals) by CPU M-cycles.
@@ -298,6 +316,7 @@ impl<
             a if Joypad::handles(a) => Some(self.joypad.read(a)),
             a if Serial::handles(a) => Some(self.serial.read(a)),
             a if Timer::handles(a) => Some(self.timer.read(a)),
+            a if Dma::handles(a) => Some(self.dma.read(a)),
             a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
             0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
             0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
@@ -334,6 +353,11 @@ impl<
             }
             a if Timer::handles(a) => {
                 self.timer.write(a, data);
+                true
+            }
+            a if Dma::handles(a) => {
+                self.dma.write(a, data);
+                self.run_oam_dma_instant();
                 true
             }
             a if DmgPpu::handles(a) => {
@@ -474,6 +498,53 @@ mod tests {
         assert_eq!(bus.read8(0xFF00).unwrap() & 0x01, 0x00);
         assert_eq!(bus.io.read(0x00), Some(0x00));
         assert!(Joypad::handles(0xFF00));
+    }
+
+    /// Instant OAM DMA: WRAM $C000 → OAM $FE00 (checklist smoke + full table).
+    #[test]
+    fn oam_dma_ff46_copies_wram_to_oam() {
+        use peripherals::Dma;
+
+        let mut bus: DmgBus = MemoryBus::new();
+        for i in 0..160u16 {
+            assert!(bus.write8(0xC000 + i, i as u8));
+        }
+        assert!(bus.write8(0xFF46, 0xC0));
+        assert_eq!(bus.read8(0xFF46), Some(0xC0));
+        assert!(Dma::handles(0xFF46));
+        assert!(!DmgPpu::handles(0xFF46));
+        assert!(!bus.dma.active, "instant DMA finishes on write");
+        for i in 0..160u16 {
+            assert_eq!(bus.read8(0xFE00 + i), Some(i as u8), "OAM[{i}]");
+        }
+    }
+
+    /// After DMA, the same OAM buffer is what the PPU composites.
+    #[test]
+    fn oam_dma_then_ppu_sees_sprite() {
+        let mut bus: DmgBus = MemoryBus::new();
+        // Tile 1 at $8010: solid colour_id 3.
+        for i in 0..16u16 {
+            assert!(bus.write8(0x8010 + i, 0xFF));
+        }
+        // OAM entry in WRAM: Y=56, X=48, tile=1, flags=0 → screen (40,40).
+        assert!(bus.write8(0xC000, 56));
+        assert!(bus.write8(0xC001, 48));
+        assert!(bus.write8(0xC002, 1));
+        assert!(bus.write8(0xC003, 0));
+        for i in 4..160u16 {
+            assert!(bus.write8(0xC000 + i, 0));
+        }
+        assert!(bus.write8(0xFF46, 0xC0));
+
+        bus.ppu.LCDC = 0x93; // LCD + OBJ + BG + $8000
+        bus.ppu.BGP = 0xE4;
+        bus.ppu.OBP0 = 0xE4;
+        bus.ppu.render_frame(&bus.vram, &bus.oam);
+
+        let px = bus.ppu.shade_frame().pixel(40, 40);
+        assert_eq!(px, 3, "DMA'd OBJ pixel should be shade 3");
+        assert_eq!(bus.ppu.shade_frame().pixel(0, 0), 0);
     }
 
     #[test]

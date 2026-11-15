@@ -238,7 +238,7 @@ Hex fixtures under `sm83-iss/fixtures/` remain for focused debugging.
 
 Detail: [`peripherals/src/Dma.README.md`](peripherals/src/Dma.README.md).
 
-- [ ] **Instant DMA**
+- [x] **Instant DMA**
 
   **What:** write `FF46` copies 160 bytes → OAM.  
   **Structure:**
@@ -250,7 +250,7 @@ for i in 0..159: oam[i] = read(src + i)
 ```text
 mem[C000]=0xAB → write FF46=0xC0 → read(FE00)==0xAB
 ```
-  **Done when:** smoke test green.
+  **Done when:** smoke test green (`oam_dma_ff46_copies_wram_to_oam`).
 
 - [ ] **Timed DMA (later)**  
   **What:** ~160 M-cycles + access rules.  

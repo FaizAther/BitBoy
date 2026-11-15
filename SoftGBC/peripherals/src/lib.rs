@@ -14,7 +14,7 @@ pub mod mmio;
 pub mod serial;
 pub mod timer;
 
-pub use dma::Dma;
+pub use dma::{Dma, OAM_DMA_LEN};
 pub use irq::{IrqLines, IF_JOYPAD, IF_SERIAL, IF_STAT, IF_TIMER, IF_VBLANK};
 pub use joypad::{Buttons, Joypad};
 pub use mmio::IoDevice;

@@ -41,9 +41,9 @@ This file is the **whole SoftGBC roadmap** — sorted by effort, not by “compl
 | `sm83-iss` | **Done for ISA** — full base + `CB`, `EI`/`DI`/`HALT`, IRQ vectoring |
 | `peripherals` | Timer + serial (capture); joypad/dma stubs |
 | Blargg `cpu_instrs` (individuals) | **11/11 Passed** via `cargo test -p soc` |
-| PPU / MBC / APU | **PPU next** — drive [`dmg-ppu` checklist](dmg-ppu/README.md); MBC/APU later |
+| PPU / MBC / APU | **PPU wired** (LY/BG/window/sprites unit); joypad/window host + MBC/APU later |
 
-**Immediate next step:** PPU checklist — LY unit tests → wire SoftGBC (drop `stub_ly`) → BG.
+**Immediate next step:** joypad / host window blit, or `dmg-acid2` / visual golden.
 
 **How to repro Blargg:**
 
@@ -260,7 +260,7 @@ mem[C000]=0xAB → write FF46=0xC0 → read(FE00)==0xAB
 ### 8. PPU “lights on” *(medium)* ← **you are here**
 
 **Driver (same checklist):** [`dmg-ppu/README.md`](dmg-ppu/README.md).  
-Scanline = **456 T**; frame = **154** lines (`0..143` draw, `144..153` VBlank). Today SoftGBC fakes LY with `stub_ly = 144`.
+Scanline = **456 T**; frame = **154** lines (`0..143` draw, `144..153` VBlank). SoftGBC uses real PPU LY (`stub_ly` removed).
 
 ---
 
@@ -415,22 +415,21 @@ one OBJ at (40,40) → crc 0x6222800E; transparent + priority smokes
 
 ---
 
-- [ ] **Wire SoftGBC / remove `stub_ly`**
+- [x] **Wire SoftGBC / remove `stub_ly`**
 
-  **What:** real LY on the bus; VBlank into `IF`.  
+  **What:** Real PPU on `DmgBus`; `step` ticks PPU into `IF`; no LY stub.  
   **Structure:**
 ```text
-DmgBus owns Ppu
-tick(t): timer.tick; ppu.tick; if take_vblank: IF |= 0x01
-FF44 → ppu.ly()
-stub_ly = none
+tick_t_cycles: IF |= timer.tick | ppu.tick
+FF44 → ppu.ly; MachineConfig has no stub_ly
 ```
   **Min test:**
 ```text
-SoftGbc steps → FF44 changes
-IME+IE VBlank → PC can reach $0040
+114 NOP steps → FF44 == 1
+VBlank tick + IME+IE → PC == $0040
+Blargg cpu_instrs green
 ```
-  **Done when:** LCD waits work without stub.
+  **Done when:** soc SoftGbc unit tests + Blargg pass without stub.
 
 ---
 

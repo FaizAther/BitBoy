@@ -512,4 +512,16 @@ mod tests {
         assert!(bus.write8(0xFF44, 0x00));
         assert_eq!(bus.read8(0xFF44), Some(1));
     }
+
+    #[test]
+    fn tick_can_set_stat_if_bit_on_lyc_edge() {
+        use peripherals::IoDevice;
+
+        let mut bus: DmgBus = MemoryBus::new();
+        bus.ppu.write(0xFF41, 0x40); // LYC STAT enable
+        bus.ppu.write(0xFF45, 1); // LYC = 1
+        bus.tick_t_cycles(456); // LY 0 → 1
+        assert_eq!(bus.ppu.ly, 1);
+        assert_eq!(bus.read8(0xFF0F).unwrap() & 0x02, 0x02);
+    }
 }

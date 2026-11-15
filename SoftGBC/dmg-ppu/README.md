@@ -23,7 +23,7 @@ SoftGbc.step → tick(t) → IF |= VBlank
 | Background → framebuffer | **Done** (`02_solid_bg`) |
 | Window | **Done** (`03_window_corner`) |
 | Sprites | **Done** (`04_sprite_one`) |
-| SoftGBC | still `stub_ly = 144` |
+| SoftGBC wiring | **Done** (no `stub_ly`; LY/VBlank/STAT via bus) |
 
 Scanline = **456 T**. Frame = **154** lines (`0..143` visible, `144..153` VBlank).
 
@@ -533,29 +533,35 @@ OBJ priority bit + BG id3 → BG wins
 
 ---
 
-- [ ] **SoftGBC owns PPU; remove** `stub_ly`
-  **What:** real LY on the bus; VBlank into `IF`.  
+- [x] **SoftGBC owns PPU; remove** `stub_ly`
+  **What:** SoftGBC uses the real `DmgPpu` on `DmgBus` for `FF40`–`FF4B` / LY. `SoftGbc::step` → `tick_m_cycles` advances the PPU; VBlank/STAT bits from `ppu.tick` OR into `IF`. No `MachineConfig::stub_ly` (FF44 writes were already ignored).  
   **Structure:**
 
 ```text
 DmgBus owns Ppu
 tick_t_cycles(t):
-  timer.tick(t)
-  ppu.tick(t)
-  if ppu.take_vblank_irq(): IF |= 0x01
-  if ppu.take_stat_irq():   IF |= 0x02
-FF44 → ppu.ly()
-stub_ly = none
+  irq = timer.tick(t).merge(ppu.tick(t))
+  IF |= irq.bits          # VBlank bit0, STAT bit1, …
+
+read/write FF40–FF4B → IoDevice on ppu
+FF44 read → ly; FF44 write → no-op
+
+MachineConfig: no stub_ly
+SoftGbc::step → cpu.step + bus.tick_m_cycles
 ```
 
   **Min test:**
 
 ```text
-SoftGbc steps → FF44 changes
-IME+IE VBlank → PC can reach $0040
+# softgbc-core (already): tick → FF44; VBlank/STAT → IF
+# soc:
+SoftGbc reset → FF44 == 0
+114× NOP step → FF44 == 1
+tick_t_cycles(144*456) + IME+IE VBlank → step → PC == $0040
+Blargg cpu_instrs still green
 ```
 
-  **Done when:** Blargg/LCD waits work without stub.
+  **Done when:** SoftGbc LY/VBlank tests green; Blargg individuals pass without LY stub.
 
 ---
 

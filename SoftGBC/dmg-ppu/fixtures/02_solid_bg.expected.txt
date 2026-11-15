@@ -1,0 +1,15 @@
+# 02_solid_bg — background-only solid frame CRC
+#
+# Setup:
+#   LCDC = 0x91   (LCD on, BG on, tile data $8000, map $9800)
+#   BGP  = 0xE4   (IDs 0..3 → shades 0..3)
+#   SCX = SCY = 0
+#   VRAM tile 0 at $8000 = 16 × 0xFF  (every pixel colour_id 3)
+#   map $9800.. = tile index 0
+#
+# Drive: render_bg(vram); frame_crc = CRC-32 (ISO-HDLC) of framebuffer[160*144]
+#        (shade bytes 0..=3, row-major).
+#
+# Expected:
+crc32 = 0x511BEFBF
+# All pixels shade == 3

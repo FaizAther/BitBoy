@@ -1,0 +1,14 @@
+# 03_window_corner — BG + window overlay CRC
+#
+# Setup:
+#   LCDC = 0xF1   (LCD on, win map $9C00, win on, tiles $8000, BG on)
+#   BGP  = 0xE4
+#   WY = 72, WX = 87  → window top-left at screen (80, 72)  [WX-7, WY]
+#   Tile 0 solid colour_id 0; tile 1 solid colour_id 3
+#   BG map $9800 → tile 0; window map $9C00 → tile 1
+#
+# Drive: render_bg(vram); frame_crc = CRC-32 of framebuffer
+#
+# Expected:
+crc32 = 0xAB9E8A54
+# pixel (0,0) = shade 0; (80,72) and (159,143) = shade 3; (79,72) = shade 0

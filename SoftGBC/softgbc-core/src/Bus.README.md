@@ -13,7 +13,8 @@
 | VRAM / OAM buffers | Done (raw) |
 | Timer + serial | Done |
 | `tick` → timer → `IF` | Done |
-| PPU LCD regs / joypad / DMA | Open |
+| PPU LCD regs / LY / VBlank+STAT→IF | Done |
+| Joypad / DMA | Open |
 
 ## Checklist
 
@@ -29,22 +30,21 @@ What → Structure → Min test → Done when (pseudocode).
 
 ---
 
-- [ ] **PPU-owned LCD regs**
+- [x] **PPU-owned LCD regs**
 
   **What:** `FF40`–`FF4B` / LY live on `Ppu`, not flat IO.  
   **Structure:**
 ```text
 DmgBus.ppu
-read FF40..FF4B → ppu.read_io
-tick(t):
-  ppu.tick(t)
-  if take_vblank: IF |= 0x01
+read FF40..FF4B → ppu IoDevice
+tick(t): IF |= timer.tick.merge(ppu.tick)
 ```
   **Min test:**
 ```text
 tick(456) → read(FF44) == 1
+VBlank / LYC STAT → IF bits 0 / 1
 ```
-  **Done when:** stub_ly gone; LY moves under SoftGbc.
+  **Done when:** stub_ly gone; LY moves under SoftGbc (soc tests).
 
 ---
 

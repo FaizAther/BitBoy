@@ -15,13 +15,11 @@ pub enum RunStatus {
     SerialFailed,
 }
 
-/// Skip-boot / headless defaults for bringing up a ROM without a PPU yet.
+/// Skip-boot / headless defaults. LY comes from the real PPU (`FF44`); no stub.
 #[derive(Debug, Clone, Copy)]
 pub struct MachineConfig {
     /// `A` after skip-boot (DMG boot leftover is `0x01`; many tests expect this).
     pub a: u8,
-    /// If set, poke `LY` (`FF44`) so LCD waits don’t spin forever without a PPU.
-    pub stub_ly: Option<u8>,
     /// Initial `IF` (`FF0F`). `0xE0` matches common “unused bits high” reads.
     pub if_init: u8,
 }
@@ -30,7 +28,6 @@ impl Default for MachineConfig {
     fn default() -> Self {
         Self {
             a: 0x01,
-            stub_ly: Some(144),
             if_init: 0xE0,
         }
     }
@@ -66,9 +63,7 @@ impl SoftGbc {
         self.cpu.pc = self.bus.entry;
         self.cpu.a = cfg.a;
         let _ = self.bus.write8(0xFF0F, cfg.if_init);
-        if let Some(ly) = cfg.stub_ly {
-            let _ = self.bus.write8(0xFF44, ly);
-        }
+        // LY (`FF44`) is owned by `bus.ppu` — advanced by `step` → `tick_*`.
         self.bus.serial.clear_output();
     }
 
@@ -115,5 +110,56 @@ impl Bus for SoftGbc {
 
     fn write8(&mut self, addr: u16, data: u8) -> bool {
         self.bus.write8(addr, data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use softgbc_core::Bus;
+
+    #[test]
+    fn step_advances_ff44_ly() {
+        let mut gb = SoftGbc::new();
+        gb.reset(&MachineConfig::default());
+        // Fill entry with NOPs so step keeps fetching.
+        for a in 0x0100..0x0200 {
+            assert!(gb.bus.poke(a, 0x00));
+        }
+        assert_eq!(gb.read8(0xFF44), Some(0));
+
+        // 1 NOP = 1 M = 4 T; one scanline = 456 T → 114 NOPs.
+        for _ in 0..114 {
+            let _ = gb.step();
+        }
+        assert_eq!(gb.read8(0xFF44), Some(1));
+        assert_eq!(gb.bus.ppu.ly, 1);
+    }
+
+    #[test]
+    fn vblank_irq_from_ppu_reaches_vector_0040() {
+        let mut gb = SoftGbc::new();
+        gb.reset(&MachineConfig::default());
+        assert!(gb.bus.poke(0x0100, 0x00)); // NOP at entry
+        assert!(gb.bus.poke(0x0040, 0x00)); // VBlank ISR stub
+        gb.cpu.pc = 0x0100;
+        gb.cpu.sp = 0xFFFE;
+        gb.cpu.ime = true;
+        assert!(gb.write8(0xFFFF, 0x01)); // IE: VBlank
+
+        // Real PPU edge: LY becomes 144 → IF bit 0 (already merged in bus.tick).
+        gb.bus.tick_t_cycles(144 * 456);
+        assert_eq!(gb.bus.ppu.ly, 144);
+        assert_eq!(gb.read8(0xFF0F).unwrap() & 0x01, 0x01);
+
+        let _ = gb.step(); // dispatch before/instead of NOP
+        assert_eq!(gb.cpu.pc, 0x0040);
+    }
+
+    #[test]
+    fn default_config_does_not_stub_ly() {
+        let mut gb = SoftGbc::new();
+        gb.reset(&MachineConfig::default());
+        assert_eq!(gb.read8(0xFF44), Some(0), "LY starts at 0 from PPU");
     }
 }

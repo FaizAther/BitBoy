@@ -1,0 +1,14 @@
+# 04_sprite_one — one 8×8 OBJ over blank BG
+#
+# Setup:
+#   LCDC = 0x93   (LCD on, OBJ on, tiles $8000, BG on)
+#   BGP = OBP0 = 0xE4
+#   BG map / tile 0 → colour_id 0 (shade 0)
+#   Tile 1 → solid colour_id 3
+#   OAM[0]: Y=56, X=48, tile=1, flags=0  → screen (40,40), above BG
+#
+# Drive: render_frame(vram, oam); frame_crc = CRC-32 of framebuffer
+#
+# Expected:
+crc32 = 0x6222800E
+# pixel (0,0)=0; (40,40)=3; (39,40)=0; (40,39)=0

@@ -30,7 +30,7 @@ SoftGbc { cpu, bus: DmgBus }
 | Machine | [`src/machine.rs`](src/machine.rs) — `SoftGbc`, `MachineConfig`, `RunStatus` |
 | CLI | `softgbc <rom.gb> [max_steps]` — any ROM; prints serial |
 | Blargg | [`tests/blargg_cpu_instrs.rs`](tests/blargg_cpu_instrs.rs) — 11/11 Passed |
-| Next | Real PPU (drop `stub_ly`); then window/joypad |
+| Next | Host window / joypad; dmg-acid2 |
 
 ```bash
 cargo run -p soc -- tests/roms/blargg/cpu_instrs/01-special.gb
@@ -113,14 +113,14 @@ Generic serial convention (`Passed` / `Failed`), not a Blargg-only runner.
 
 ## Step 8 — PPU (`dmg-ppu`) ← detail in dmg-ppu checklist
 
-- [ ] **PPU owned / ticked by machine**  
-  **Structure:** `DmgBus { ppu: Ppu }`; `tick_t_cycles` → `ppu.tick(t)`.  
-  **Min test:** unit `dmg-ppu` LY green first; then SoftGbc steps change `FF44`.
-- [ ] **Remove `stub_ly` once LY is real** — `MachineConfig::stub_ly = None`  
-  **Min test:** LCD-wait style ROM/loop exits without poking `FF44` in `reset`.
-- [ ] **VBlank/STAT → `IF`** — `IF |= 0x01` on `take_vblank_irq()`  
-  **Min test:** after LY→144 worth of ticks, `FF0F & 1 != 0`.
-- [ ] **BG + CRC / PPM** — after LY wired (see dmg-ppu checklist)
+- [x] **PPU owned / ticked by machine**  
+  **Structure:** `DmgBus { ppu }`; `tick_t_cycles` → `ppu.tick(t)` merged into `IF`.  
+  **Min test:** SoftGbc 114 NOPs → `FF44 == 1`.
+- [x] **Remove `stub_ly`** — field removed from `MachineConfig`; LY from PPU only.  
+  **Min test:** reset → `FF44 == 0`.
+- [x] **VBlank/STAT → `IF`** — `ppu.tick` bits ORed into `FF0F`.  
+  **Min test:** LY→144 → IF bit0; LYC edge → IF bit1; SoftGbc VBlank → PC `$0040`.
+- [x] **BG + CRC / PPM** — see dmg-ppu fixtures `02`–`04` (unit render; host blit later).
 
 ---
 

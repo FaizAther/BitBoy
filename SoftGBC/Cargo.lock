@@ -11,11 +11,15 @@ name = "dmg-ppu"
 version = "0.1.0"
 dependencies = [
  "peripherals",
+ "softgbc-utils",
 ]
 
 [[package]]
 name = "peripherals"
 version = "0.1.0"
+dependencies = [
+ "softgbc-utils",
+]
 
 [[package]]
 name = "sm83-iss"
@@ -39,3 +43,7 @@ dependencies = [
  "dmg-ppu",
  "peripherals",
 ]
+
+[[package]]
+name = "softgbc-utils"
+version = "0.1.0"

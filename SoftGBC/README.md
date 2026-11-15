@@ -129,6 +129,7 @@ Every step should leave something you can **run or `cargo test`** before the nex
 | Folder | Role | Status |
 |---|---|---|
 | [`softgbc-core/`](softgbc-core/) | Shared `Bus` trait, `MemoryBus`/`DmgBus`, hex + `.gb` load | **In use** |
+| [`softgbc-utils/`](softgbc-utils/) | Shared helpers (`BitField` / `Reg8`, …) | **In use** |
 | [`peripherals/`](peripherals/) | Timer + serial/joypad/dma (+ `*.README.md` next to sources) | **Timer wired**; others stub |
 | [`sm83-iss/`](sm83-iss/) | SM83 CPU crate | **ISA done** |
 | [`dmg-ppu/`](dmg-ppu/) | DMG PPU crate | Stub |
@@ -263,25 +264,77 @@ Scanline = **456 T**; frame = **154** lines (`0..143` draw, `144..153` VBlank). 
 
 ---
 
-- [x] **`tick(t)` advances LY**  
+- [x] **`tick(t)` advances LY**
+
+  **What:** LY counts scanlines from time alone (no ROM).  
+  **Structure:**
+```text
+Ppu: ly, line_cycles          # line_cycles 0..455
+
+tick(n):
+  line_cycles += n
+  while line_cycles >= 456:
+    line_cycles -= 456
+    ly += 1
+    if ly == 154: ly = 0
+```
+  **Min test:**
+```text
+tick(455) → ly == 0
+tick(1)   → ly == 1
+fixture: 0→0, 456→1, 912→2, 65664→144, 70224→0
+```
   **Done when:** [`dmg-ppu/fixtures/01_ly_only.expected.txt`](dmg-ppu/fixtures/01_ly_only.expected.txt) green.
 
 ---
 
-- [x] **VBlank IRQ edge at LY=144**  
+- [x] **VBlank IRQ edge at LY=144**
+
+  **What:** one request when LY *becomes* 144 (not every tick on 144).  
+  **Structure:**
+```text
+when ly becomes 144: raise VBlank (IF bit 0) once
+# edge-only — not level while ly stays 144
+```
+  **Min test:**
+```text
+tick(143*456) → no VBlank
+tick(456) → ly==144, VBlank once
+further ticks on 144 → no extra VBlank
+```
   **Done when:** edge-only raise when LY becomes 144 (not every tick on 144).
 
 ---
 
-- [x] **IO `FF40`–`FF4B` (LY = `FF44`)**  
-  **Done when:** LCDC round-trip; `FF44` == `ly`; bus routes via `IoDevice`.
+- [x] **IO `FF40`–`FF4B` (LY = `FF44`)**
+
+  **What:** CPU-visible LCD register window. Games write `LCDC` (`FF40`) to enable the PPU and read `LY` (`FF44`) to wait for scanlines. Other bytes plain storage until later items.  
+  **Refs:** [Hardware regs](https://gbdev.io/pandocs/Hardware_Reg_List.html) · [LCDC](https://gbdev.io/pandocs/LCDC.html) · [STAT / LY](https://gbdev.io/pandocs/STAT.html) · full detail in [`dmg-ppu/README.md`](dmg-ppu/README.md)  
+  **Structure:**
+```text
+FF40 LCDC R/W  FF41 STAT R/W  FF42 SCY  FF43 SCX
+FF44 LY   R    (return ly; ignore writes for now)
+FF45 LYC  R/W  FF46 DMA (store / bus later)
+FF47 BGP  FF48 OBP0  FF49 OBP1  FF4A WY  FF4B WX
+
+IoDevice on Ppu; bus routes FF40–FF4B
+FF44 read → ly; FF44 write → no-op
+```
+  **Min test:**
+```text
+write_io(FF40, 0x80) → read_io(FF40) == 0x80
+tick(456) → read_io(FF44) == 1 == ly
+write_io(FF44, 0) → read_io(FF44) still 1
+write_io(FF42, 0x55) → read_io(FF42) == 0x55
+```
+  **Done when:** LCDC round-trip; `FF44` == `ly`; `FF44` writes ignored; bus routes via `IoDevice`.
 
 ---
 
-- [ ] **Modes 0–3 / STAT**
+- [x] **Modes 0–3 / STAT**
 
   **What:** Visible line: Mode 2 → 3 → 0; `LY >= 144` → Mode 1. `STAT` shows mode + LYC flag; enabled edges raise `IF` bit 1.  
-  **Refs:** [STAT](https://gbdev.io/pandocs/STAT.html) · full detail in [`dmg-ppu/README.md`](dmg-ppu/README.md)  
+  **Refs:** [STAT](https://gbdev.io/pandocs/STAT.html) · explainer + diagrams: [`dmg-ppu` — PPU modes 0–3](dmg-ppu/README.md#ppu-modes-0-3)  
   **Structure:**
 ```text
 v1 budgets: Mode2=80 T, Mode3=172 T, rest Mode0; LY>=144 → Mode1
@@ -294,42 +347,71 @@ T=0 → mode 2; after 80 T → mode 3; after +172 T → mode 0
 tick(144*456) → mode 1
 LYC=ly → STAT bit2 set; write STAT 0xFF → mode bits still live
 STAT bit6 + LYC=1, tick(456) → STAT irq once (no repeat)
+Mode2 select + enter Mode 2 on next line → STAT irq once
 ```
-  **Done when:** mode readable via `FF41`; LYC STAT edge works (bus can `IF |= 0x02`).
+  **Done when:** mode readable via `FF41`; LYC + Mode-2 enter STAT edges tested.
 
 ---
 
-- [ ] **Background → framebuffer + CRC**
+- [x] **Background → framebuffer + CRC**
 
-  **What:** BG tiles → 160×144; golden hash.  
+  **What:** Draw BG-only into a **160×144** buffer (viewport into 256×256 tilemap); map each pixel through tile data + **BGP**; CRC for goldens. No window/sprites yet.  
+  **Refs:** [Tile Data](https://gbdev.io/pandocs/Tile_Data.html) · [Tile Maps](https://gbdev.io/pandocs/Tile_Maps.html) · [BGP](https://gbdev.io/pandocs/Palettes.html) · full detail in [`dmg-ppu/README.md`](dmg-ppu/README.md)  
   **Structure:**
 ```text
-SCX/SCY + LCDC → tile in VRAM → BGP → framebuffer
-frame_crc = hash(framebuffer)
+LCDC: bit7 LCD, bit4 tile ($8000 vs $8800), bit3 map ($9800/$9C00), bit0 BG on
+for each screen pixel (sx,sy):
+  (wx,wy) = (SCX+sx, SCY+sy) mod 256
+  tile_id = map[(wy/8)*32 + (wx/8)]
+  color_id = 2bpp from tile row (fine_y), bit (7-fine_x)
+  framebuffer[sy*160+sx] = BGP_shade(color_id)
+frame_crc = crc32(framebuffer)   # softgbc_utils::crc32
+# DmgPpu::render_bg(vram) / frame_crc()
 ```
   **Min test:**
 ```text
-one solid tile, BG on → one frame → frame_crc == GOLDEN
+LCDC=0x91, BGP=0xE4, SCX=SCY=0
+tile0 = solid color_id 3; map uses tile 0
+render_bg → frame_crc == 0x511BEFBF (fixtures/02_solid_bg)
+BG off → blank/white frame
+SCX=8 shifts two-tone image by one tile
 ```
-  **Done when:** golden checked in under `dmg-ppu/fixtures/`.
+  **Done when:** `02_solid_bg` golden checked in under `dmg-ppu/fixtures/` and green.
 
 ---
 
-- [ ] **Window**
+- [x] **Window**
 
-  **What:** WY/WX window layer over BG.  
-  **Structure:** when active, fetch window map instead of BG.  
-  **Min test:** known rect → pixel or CRC.  
-  **Done when:** window golden matches.
+  **What:** Non-scrolling overlay; screen origin `(WX-7, WY)`. `LCDC.5` enable, `LCDC.6` map.  
+  **Refs:** [Window](https://gbdev.io/pandocs/Window.html) · [`dmg-ppu` checklist](dmg-ppu/README.md) · [`03_window_corner`](dmg-ppu/fixtures/03_window_corner.expected.txt)  
+  **Structure:**
+```text
+if win on and sy>=WY and sx>=(WX-7): fetch win map at (sx-(WX-7), sy-WY)
+else: BG path
+```
+  **Min test:**
+```text
+LCDC=0xF1, WY=72, WX=87 → window at (80,72); crc 0xAB9E8A54
+win off → BG only
+```
+  **Done when:** `03_window_corner` golden green.
 
 ---
 
-- [ ] **Sprites**
+- [x] **Sprites**
 
-  **What:** OAM objects composited with BG.  
-  **Structure:** OAM scan → merge (priority / transparency).  
-  **Min test:** one OBJ → expected non-BG pixel.  
-  **Done when:** sprite golden or acid2 progress.
+  **What:** OAM OBJs (≤10/line) over BG/window; colour 0 transparent; OBP0/1; priority bit.  
+  **Refs:** [OAM](https://gbdev.io/pandocs/OAM.html) · [`04_sprite_one`](dmg-ppu/fixtures/04_sprite_one.expected.txt) · [`dmg-ppu` checklist](dmg-ppu/README.md)  
+  **Structure:**
+```text
+render_frame(vram, oam)
+scan ≤10 OBJs by Y; per pixel lowest-X wins; composite vs BGP colour id
+```
+  **Min test:**
+```text
+one OBJ at (40,40) → crc 0x6222800E; transparent + priority smokes
+```
+  **Done when:** `04_sprite_one` golden green.
 
 ---
 

@@ -3,6 +3,8 @@
 //! Owns the internal 16-bit DIV counter and TIMA/TMA/TAC state. The SoC bus
 //! routes those addresses here; they are not stored as flat IO RAM.
 
+use softgbc_utils::BitField;
+
 use crate::irq::{IrqLines, IF_TIMER};
 use crate::mmio::IoDevice;
 
@@ -10,6 +12,10 @@ const ADDR_DIV: u16 = 0xFF04;
 const ADDR_TIMA: u16 = 0xFF05;
 const ADDR_TMA: u16 = 0xFF06;
 const ADDR_TAC: u16 = 0xFF07;
+
+/// TAC (`FF07`): clock select + enable.
+const TAC_CLOCK: BitField = BitField::new(0, 2);
+const TAC_ENABLE: BitField = BitField::bit(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timer {
@@ -64,11 +70,11 @@ impl Timer {
     }
 
     fn enabled(&self) -> bool {
-        self.tac & 0x04 != 0
+        TAC_ENABLE.is_set(self.tac)
     }
 
     fn selected_bit(&self) -> u8 {
-        match self.tac & 0x03 {
+        match TAC_CLOCK.get(self.tac) {
             0b00 => 9,
             0b01 => 3,
             0b10 => 5,
@@ -111,7 +117,7 @@ impl IoDevice for Timer {
             ADDR_TIMA => self.tima = data,
             ADDR_TMA => self.tma = data,
             ADDR_TAC => {
-                self.tac = data & 0x07;
+                self.tac = data & (TAC_CLOCK.mask_in_place() | TAC_ENABLE.mask_in_place());
                 self.last_and = self.and_result();
             }
             _ => {}

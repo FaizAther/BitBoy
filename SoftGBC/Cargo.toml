@@ -7,6 +7,7 @@ members = [
     "dmg-ppu",
     "softgbc-core",
     "peripherals",
+    "softgbc-utils",
 ]
 
 # Shared package defaults for all members (optional).

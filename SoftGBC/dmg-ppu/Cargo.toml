@@ -7,3 +7,4 @@ description = "DMG PPU reference model (stub)"
 
 [dependencies]
 peripherals = { path = "../peripherals" }
+softgbc-utils = { path = "../softgbc-utils" }

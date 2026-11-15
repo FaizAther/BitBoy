@@ -1,6 +1,6 @@
-# SM83 Platform
+# GBC Platform
 
-An end-to-end, open-source Game Boy–class development platform:
+An end-to-end, open-source Game Boy Color development platform:
 
 **C / Rust / Zig → LLVM IR → SM83 machine code → QEMU / SameBoy / Verilog / FPGA**
 
@@ -60,8 +60,8 @@ QEMU SM83 target  ←  SameBoy / mGBA  ←  Verilog simulation  ←  FPGA hardwa
 Work is split across repos so CPU, graphics, compiler, and SoC can move in parallel. The **platform** repo wires them together (bus, MBCs, APU, FPGA, CI) and consumes the small libraries as **git submodules**.
 
 ```text
-GBA/   (platform root — everything lives under here)
-├── SoftGba/              # software Game Boy
+GBC/   (platform root — everything lives under here)
+├── SoftGBC/              # software Game Boy Color
 │   ├── sm83-iss/         # nested git repo — Rust CPU
 │   ├── dmg-ppu/          # nested git repo — Rust PPU
 │   ├── apu/ bus/ …       # other virtual hardware
@@ -74,38 +74,38 @@ GBA/   (platform root — everything lives under here)
 └── qemu/                 # optional local QEMU fork
 ```
 
-| Path under `GBA/` | Role | Own git repo? |
+| Path under `GBC/` | Role | Own git repo? |
 |---|---|---|
-| **.** (platform) | Umbrella: SoftGba, RTL, FPGA HIL, tools | yes |
-| **`SoftGba/`** | Software DMG machine | no — lives here |
-| **`SoftGba/sm83-iss/`** | SM83 CPU ISS crate | yes — submodule later |
-| **`SoftGba/dmg-ppu/`** | DMG PPU crate | yes — submodule later |
+| **.** (platform) | Umbrella: SoftGBC, RTL, FPGA HIL, tools | yes |
+| **`SoftGBC/`** | Software GBC/DMG machine | no — lives here |
+| **`SoftGBC/sm83-iss/`** | SM83 CPU ISS crate | yes — submodule later |
+| **`SoftGBC/dmg-ppu/`** | DMG PPU crate | yes — submodule later |
 | **`llvm-project/`** | SM83 LLVM backend (Chunks C–D) | yes — heavy fork, optional |
 | **`qemu/`** | SM83 QEMU target (Chunk E) | yes — heavy fork, optional |
 
 ### How a full game runs (software path)
 
 ```text
-.gb ROM
+.gb / .gbc ROM
    ↓
- SoftGba/soc
-   ├── SoftGba/sm83-iss
-   ├── SoftGba/dmg-ppu
+ SoftGBC/soc
+   ├── SoftGBC/sm83-iss
+   ├── SoftGBC/dmg-ppu
    ├── bus, memory, cartridge, timer, dma, interrupt, joypad, apu, …
    ↓
  framebuffer / audio / input
 ```
 
-See [`SoftGba/README.md`](SoftGba/README.md) for the full component list.
+See [`SoftGBC/README.md`](SoftGBC/README.md) for the full component list.
 
 ### Nested repos → submodules later
 
-`SoftGba/sm83-iss/` and `SoftGba/dmg-ppu/` are their own git repos. When the umbrella is published:
+`SoftGBC/sm83-iss/` and `SoftGBC/dmg-ppu/` are their own git repos. When the umbrella is published:
 
 ```bash
-# from GBA/, after remotes exist
-git submodule add git@github.com:<you>/sm83-iss.git SoftGba/sm83-iss
-git submodule add git@github.com:<you>/dmg-ppu.git  SoftGba/dmg-ppu
+# from GBC/, after remotes exist
+git submodule add git@github.com:<you>/sm83-iss.git SoftGBC/sm83-iss
+git submodule add git@github.com:<you>/dmg-ppu.git  SoftGBC/dmg-ppu
 git submodule update --init --recursive
 ```
 
@@ -293,12 +293,12 @@ Do not start Chunk I until Chunk H’s CPU HIL is green.
 ## Repository layout
 
 ```text
-GBA/                        # Everything under this root
-├── SoftGba/
+GBC/                        # Everything under this root
+├── SoftGBC/
 │   ├── sm83-iss/           # nested git repo → CPU ISS
 │   ├── dmg-ppu/            # nested git repo → PPU
 │   ├── apu/ bus/ memory/ … # other virtual hardware
-│   └── soc/                # SoftGba glue / runner
+│   └── soc/                # SoftGBC glue / runner
 ├── rtl/                    # FPGA / simulation RTL
 │   ├── cpu/
 │   ├── bus/
@@ -323,7 +323,7 @@ GBA/                        # Everything under this root
 └── README.md
 ```
 
-LLVM/QEMU forks clone **into** `GBA/` when you need them (see `repos.txt`); they are optional until Chunks C–E.
+LLVM/QEMU forks clone **into** `GBC/` when you need them (see `repos.txt`); they are optional until Chunks C–E.
 
 ## Current status
 
@@ -332,9 +332,9 @@ SoftGBC (software path) is ahead of the LLVM/QEMU/RTL chunks. Details and checkl
 | Component | Chunk | Status |
 |---|---|---|
 | Tooling & harness | A | Partial — SoftGBC workspace + Blargg assets; `trace-diff` / CI still Planned |
-| SM83 reference ISS (`SoftGBC/sm83-iss`) | B | **In progress** — full ISA + tests; Blargg individuals 10/11 Passed (`02-interrupts` needs SoftGBC timer) |
-| SoftGBC SoC / bus | B/I glue | **In progress** — headless Blargg runner; timer/PPU/MBC not started |
-| DMG PPU crate (`SoftGBC/dmg-ppu`) | I | Stub |
+| SM83 reference ISS (`SoftGBC/sm83-iss`) | B | **In progress** — complete instruction execution supports playable commercial ROMs; conformance remains ongoing |
+| SoftGBC SoC / bus | B/I glue | **Playable** — Tetris DX runs through the browser host with video and joypad input |
+| DMG PPU crate (`SoftGBC/dmg-ppu`) | I | **In progress** — renders gameplay; accuracy and GBC extensions remain ongoing |
 | LLVM assembler / MC layer | C | Planned |
 | LLVM code-generation backend | D | Planned |
 | QEMU SM83 CPU target | E | Planned |
@@ -686,6 +686,9 @@ pytest rtl/tests
 
 - [`docs/architecture.md`](docs/architecture.md) — overall system architecture
 - [`docs/chunks.md`](docs/chunks.md) — chunk contracts and dependency graph
+- [`docs/llvm/README.md`](docs/llvm/README.md) — LLVM SM83 big picture and phase checklists
+- [`docs/qemu/README.md`](docs/qemu/README.md) — QEMU integration approach and phase checklists
+- [`docs/sdk/README.md`](docs/sdk/README.md) — agent-oriented GBC game SDK roadmap
 - [`docs/llvm-backend.md`](docs/llvm-backend.md) — SM83 LLVM backend design
 - [`docs/qemu-target.md`](docs/qemu-target.md) — QEMU target and machine model
 - [`docs/rtl-design.md`](docs/rtl-design.md) — RTL microarchitecture and bus design

@@ -4,6 +4,8 @@
 //! to [`Self::output`] and clear the transfer-in-progress bit. Enough for
 //! headless test ROMs (Blargg, etc.); not a real serial peer.
 
+use crate::mmio::IoDevice;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Serial {
     pub sb: u8,
@@ -27,11 +29,17 @@ impl Serial {
         }
     }
 
-    pub fn handles(addr: u16) -> bool {
+    pub fn clear_output(&mut self) {
+        self.output.clear();
+    }
+}
+
+impl IoDevice for Serial {
+    fn handles(addr: u16) -> bool {
         matches!(addr, 0xFF01 | 0xFF02)
     }
 
-    pub fn read(&self, addr: u16) -> u8 {
+    fn read(&self, addr: u16) -> u8 {
         match addr {
             0xFF01 => self.sb,
             0xFF02 => self.sc,
@@ -39,7 +47,7 @@ impl Serial {
         }
     }
 
-    pub fn write(&mut self, addr: u16, data: u8) {
+    fn write(&mut self, addr: u16, data: u8) {
         match addr {
             0xFF01 => self.sb = data,
             0xFF02 => {
@@ -54,9 +62,5 @@ impl Serial {
             }
             _ => {}
         }
-    }
-
-    pub fn clear_output(&mut self) {
-        self.output.clear();
     }
 }

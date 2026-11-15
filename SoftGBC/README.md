@@ -263,78 +263,39 @@ Scanline = **456 T**; frame = **154** lines (`0..143` draw, `144..153` VBlank). 
 
 ---
 
-- [ ] **`tick(t)` advances LY**
-
-  **What:** LY counts scanlines from time alone (no ROM).  
-  **Structure:**
-```text
-Ppu: ly, line_cycles          # line_cycles 0..455
-
-tick(n):
-  line_cycles += n
-  while line_cycles >= 456:
-    line_cycles -= 456
-    ly += 1
-    if ly == 154: ly = 0
-```
-  **Min test:**
-```text
-tick(455) → ly == 0
-tick(1)   → ly == 1
-fixture: 0→0, 456→1, 912→2, 65664→144, 70224→0
-```
+- [x] **`tick(t)` advances LY**  
   **Done when:** [`dmg-ppu/fixtures/01_ly_only.expected.txt`](dmg-ppu/fixtures/01_ly_only.expected.txt) green.
 
 ---
 
-- [ ] **VBlank IRQ edge at LY=144**
-
-  **What:** one request when LY *becomes* 144 (not every tick on 144).  
-  **Structure:**
-```text
-when ly becomes 144: vblank_irq = true
-take_vblank_irq(): return and clear flag
-```
-  **Min test:**
-```text
-tick(143*456) → take == false
-tick(456) → ly==144, take==true once
-```
-  **Done when:** edge-only behaviour locked.
+- [x] **VBlank IRQ edge at LY=144**  
+  **Done when:** edge-only raise when LY becomes 144 (not every tick on 144).
 
 ---
 
-- [ ] **IO `FF40`–`FF4B` (LY = `FF44`)**
-
-  **What:** LCD regs; `FF44` reads as LY.  
-  **Structure:**
-```text
-read_io / write_io
-FF44 read → ly
-```
-  **Min test:**
-```text
-write FF40 LCD-on → read back
-read FF44 == ly
-```
-  **Done when:** LCDC round-trip; LY readable.
+- [x] **IO `FF40`–`FF4B` (LY = `FF44`)**  
+  **Done when:** LCDC round-trip; `FF44` == `ly`; bus routes via `IoDevice`.
 
 ---
 
-- [ ] **Modes 0–3 / STAT (optional early, needed before acid2)**
+- [ ] **Modes 0–3 / STAT**
 
-  **What:** per-line OAM search / draw / HBlank; VBlank is mode 1. STAT can request `IF` bit 1.  
+  **What:** Visible line: Mode 2 → 3 → 0; `LY >= 144` → Mode 1. `STAT` shows mode + LYC flag; enabled edges raise `IF` bit 1.  
+  **Refs:** [STAT](https://gbdev.io/pandocs/STAT.html) · full detail in [`dmg-ppu/README.md`](dmg-ppu/README.md)  
   **Structure:**
 ```text
-within a line (456 T): advance mode by cycle budget
-take_stat_irq on enabled edges (mode / LYC)
+v1 budgets: Mode2=80 T, Mode3=172 T, rest Mode0; LY>=144 → Mode1
+STAT read: bits0–1=mode, bit2=(LY==LYC), bits3–6=selects from write
+on mode enter / LYC edge if select enabled → STAT irq (edge once)
 ```
   **Min test:**
 ```text
-after N T into a visible line, mode matches expected
-LYC==LY with STAT enable → IF bit 1
+T=0 → mode 2; after 80 T → mode 3; after +172 T → mode 0
+tick(144*456) → mode 1
+LYC=ly → STAT bit2 set; write STAT 0xFF → mode bits still live
+STAT bit6 + LYC=1, tick(456) → STAT irq once (no repeat)
 ```
-  **Done when:** mode + one STAT path tested; see [`interrupt/README.md`](interrupt/README.md).
+  **Done when:** mode readable via `FF41`; LYC STAT edge works (bus can `IF |= 0x02`).
 
 ---
 

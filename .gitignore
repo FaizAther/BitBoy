@@ -1,5 +1,6 @@
 # Editor / agent
 .cursor/
+.vscode/
 
 # Build artifacts
 **/target/

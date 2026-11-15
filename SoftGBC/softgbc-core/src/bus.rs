@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use dmg_ppu::DmgPpu;
-use peripherals::{Serial, Timer};
+use peripherals::{IoDevice, Serial, Timer};
 
 use crate::hex_load::{HexImage, HexLoadError};
 use crate::memory::{Ram, Rom};
@@ -15,9 +15,10 @@ pub trait Bus {
 ///
 /// Default DMG-like sizes: `MemoryBus<0x8000, 0x2000, 0x7F, 0x80, 0x1>`.
 ///
-/// Peripheral-owned IO (not flat `io[]`):
+/// Peripheral-owned IO (not flat `io[]`) via [`IoDevice`]:
 /// - `FF01`–`FF02` → [`Serial`]
 /// - `FF04`–`FF07` → [`Timer`]
+/// - `FF40`–`FF4B` → [`DmgPpu`]
 ///
 /// Call [`Self::tick_m_cycles`] from the SoC after each `cpu.step()`.
 pub struct MemoryBus<
@@ -292,6 +293,7 @@ impl<
             0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
             a if Serial::handles(a) => Some(self.serial.read(a)),
             a if Timer::handles(a) => Some(self.timer.read(a)),
+            a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
             0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
             0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
             0xFFFF => self.ie.read(0),
@@ -323,6 +325,10 @@ impl<
             }
             a if Timer::handles(a) => {
                 self.timer.write(a, data);
+                true
+            }
+            a if DmgPpu::handles(a) => {
+                self.ppu.write(a, data);
                 true
             }
             0xFF00..=0xFF7F => {
@@ -492,5 +498,18 @@ mod tests {
         // IF bit 0 should only be set when VBlank is *taken* (LY→144).
         // If this fails, PPU is raising VBlank on every line advance.
         assert_eq!(bus.read8(0xFF0F).unwrap() & 0x01, 0x00);
+    }
+
+    #[test]
+    fn ppu_lcd_regs_owned_by_ppu_not_flat_io() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF40, 0x91));
+        assert_eq!(bus.read8(0xFF40), Some(0x91));
+        assert_eq!(bus.io.read(0x40), Some(0x00));
+
+        bus.tick_t_cycles(456);
+        assert_eq!(bus.read8(0xFF44), Some(1));
+        assert!(bus.write8(0xFF44, 0x00));
+        assert_eq!(bus.read8(0xFF44), Some(1));
     }
 }

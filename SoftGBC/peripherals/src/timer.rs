@@ -4,6 +4,7 @@
 //! routes those addresses here; they are not stored as flat IO RAM.
 
 use crate::irq::{IrqLines, IF_TIMER};
+use crate::mmio::IoDevice;
 
 const ADDR_DIV: u16 = 0xFF04;
 const ADDR_TIMA: u16 = 0xFF05;
@@ -35,38 +36,6 @@ impl Timer {
             tma: 0,
             tac: 0,
             last_and: false,
-        }
-    }
-
-    pub fn handles(addr: u16) -> bool {
-        matches!(addr, ADDR_DIV..=ADDR_TAC)
-    }
-
-    pub fn read(&self, addr: u16) -> u8 {
-        match addr {
-            ADDR_DIV => (self.div16 >> 8) as u8,
-            ADDR_TIMA => self.tima,
-            ADDR_TMA => self.tma,
-            ADDR_TAC => self.tac | 0xF8, // upper bits read as 1 on DMG
-            _ => 0xFF,
-        }
-    }
-
-    pub fn write(&mut self, addr: u16, data: u8) {
-        match addr {
-            ADDR_DIV => {
-                // Any write resets the whole internal counter.
-                self.div16 = 0;
-                // Falling-edge glitch on reset is deferred (accuracy follow-up).
-                self.last_and = self.and_result();
-            }
-            ADDR_TIMA => self.tima = data,
-            ADDR_TMA => self.tma = data,
-            ADDR_TAC => {
-                self.tac = data & 0x07;
-                self.last_and = self.and_result();
-            }
-            _ => {}
         }
     }
 
@@ -113,6 +82,40 @@ impl Timer {
         }
         let bit = self.selected_bit();
         (self.div16 >> bit) & 1 != 0
+    }
+}
+
+impl IoDevice for Timer {
+    fn handles(addr: u16) -> bool {
+        matches!(addr, ADDR_DIV..=ADDR_TAC)
+    }
+
+    fn read(&self, addr: u16) -> u8 {
+        match addr {
+            ADDR_DIV => (self.div16 >> 8) as u8,
+            ADDR_TIMA => self.tima,
+            ADDR_TMA => self.tma,
+            ADDR_TAC => self.tac | 0xF8, // upper bits read as 1 on DMG
+            _ => 0xFF,
+        }
+    }
+
+    fn write(&mut self, addr: u16, data: u8) {
+        match addr {
+            ADDR_DIV => {
+                // Any write resets the whole internal counter.
+                self.div16 = 0;
+                // Falling-edge glitch on reset is deferred (accuracy follow-up).
+                self.last_and = self.and_result();
+            }
+            ADDR_TIMA => self.tima = data,
+            ADDR_TMA => self.tma = data,
+            ADDR_TAC => {
+                self.tac = data & 0x07;
+                self.last_and = self.and_result();
+            }
+            _ => {}
+        }
     }
 }
 

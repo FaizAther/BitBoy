@@ -6,14 +6,16 @@ OAM DMA via `FF46`.
 
 ## Status *(2026-11)*
 
-**Instant OAM DMA wired** on `DmgBus`: write `FF46` copies 160 bytes into OAM immediately.
-Timed DMA + CPU bus limits still open.
+**Timed OAM DMA wired** on `DmgBus`: write `FF46` starts a 160 M-cycle transfer
+(1 byte / M via `tick_t_cycles` / `tick_m_cycles`). While active, CPU access outside
+HRAM / `FF46` is blocked (reads `$FF`, writes ignored).
 
 ```text
 write FF46 = src_hi
-  → copy 160 bytes from (src_hi << 8) → OAM FE00..FE9F
-  SoftGBC: instant (Dma::run_instant / bus.run_oam_dma_instant)
-real HW ≈ 160 M-cycles with CPU bus limits
+  → active, index = 0, src = src_hi << 8
+each M-cycle while active:
+  oam[index] = read(src + index); index++
+  if index == 160: active = false
 ```
 
 ### Allowed sources (SoftGBC)
@@ -21,10 +23,16 @@ real HW ≈ 160 M-cycles with CPU bus limits
 | Source | SoftGBC |
 |---|---|
 | WRAM `$C000`–`$DFFF` | **Supported** (common game path) |
-| ROM / VRAM / other via `bus.read8` | Whatever the bus returns (no extra reject) |
+| ROM / VRAM / other via bus raw read | Whatever the map returns |
 | Echo WRAM `$E000`–`$FDFF` | Follows bus echo mapping |
 
-Games typically DMA from WRAM. We do not yet emulate source-region restrictions beyond the bus map.
+### CPU during DMA
+
+| Region | Read | Write |
+|---|---|---|
+| HRAM `$FF80`–`$FFFE` | ok | ok |
+| `FF46` | ok (page) | restarts DMA |
+| Everything else | `$FF` | ignored |
 
 ## Checklist
 
@@ -78,7 +86,7 @@ for i in 0..159: assert oam[i] == i
 
 ---
 
-- [ ] **Timed DMA (~160 M-cycles)**
+- [x] **Timed DMA (~160 M-cycles)**
 
   **What:** spread copy over time instead of instant.  
   **Structure:**
@@ -97,11 +105,11 @@ start → index 0
 tick(1) → one byte written
 after 160 → inactive
 ```
-  **Done when:** timing test green.
+  **Done when:** timing test green (`timed_dma_one_byte_per_m_cycle`, bus ticks).
 
 ---
 
-- [ ] **CPU access limits during DMA**
+- [x] **CPU access limits during DMA**
 
   **What:** during DMA, CPU mostly reliable for HRAM only.  
   **Structure:**
@@ -110,7 +118,7 @@ if dma.active and addr not HRAM:
   read → 0xFF   # or documented open-bus
 ```
   **Min test:** mid-DMA WRAM read returns chosen value.  
-  **Done when:** policy locked in a test.
+  **Done when:** policy locked in a test (`oam_dma_cpu_access_limited_to_hram`).
 
 ---
 

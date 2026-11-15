@@ -21,7 +21,7 @@ pub trait Bus {
 /// - `FF01`–`FF02` → [`Serial`]
 /// - `FF04`–`FF07` → [`Timer`]
 /// - `FF40`–`FF45`, `FF47`–`FF4B` → [`DmgPpu`]
-/// - `FF46` → [`Dma`] (instant OAM copy)
+/// - `FF46` → [`Dma`] (timed OAM copy; 1 byte / M-cycle)
 ///
 /// Call [`Self::tick_m_cycles`] from the SoC after each `cpu.step()`.
 pub struct MemoryBus<
@@ -90,17 +90,59 @@ impl<
         &self.serial.output
     }
 
-    /// Instant OAM DMA: copy 160 bytes from `dma.page << 8` into [`Self::oam`].
-    fn run_oam_dma_instant(&mut self) {
-        let base = self.dma.src_base();
-        let mut buf = [0u8; OAM_DMA_LEN];
-        for (i, slot) in buf.iter_mut().enumerate() {
-            *slot = self
-                .read8(base.wrapping_add(i as u16))
-                .unwrap_or(0xFF);
+    /// HRAM `$FF80`–`$FFFE` (and `FF46`) — CPU-safe during OAM DMA.
+    fn cpu_ok_during_dma(addr: u16) -> bool {
+        matches!(addr, 0xFF80..=0xFFFE) || addr == 0xFF46
+    }
+
+    /// Physical map read (no DMA CPU blocking). Used by DMA source fetches.
+    fn read8_raw(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x7FFF => {
+                let local = addr as usize;
+                if local < ROM_SIZE {
+                    self.rom.read(addr)
+                } else {
+                    Some(0xFF)
+                }
+            }
+            0x8000..=0x9FFF => Some(self.vram[(addr - 0x8000) as usize]),
+            0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
+            0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
+            a if Joypad::handles(a) => Some(self.joypad.read(a)),
+            a if Serial::handles(a) => Some(self.serial.read(a)),
+            a if Timer::handles(a) => Some(self.timer.read(a)),
+            a if Dma::handles(a) => Some(self.dma.read(a)),
+            a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
+            0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
+            0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
+            0xFFFF => self.ie.read(0),
+            _ => Some(0xFF),
         }
-        self.oam[..OAM_DMA_LEN].copy_from_slice(&buf);
-        self.dma.active = false;
+    }
+
+    /// Read for DMA source fetch (ignores CPU-during-DMA blocking).
+    fn read8_unrestricted(&self, addr: u16) -> u8 {
+        self.read8_raw(addr).unwrap_or(0xFF)
+    }
+
+    /// Copy up to `m_cycles` OAM DMA bytes (1 byte / M-cycle).
+    fn tick_oam_dma(&mut self, m_cycles: u32) {
+        if !self.dma.active || m_cycles == 0 {
+            return;
+        }
+        let base = self.dma.src_base();
+        let start = self.dma.index as usize;
+        let n = (OAM_DMA_LEN - start).min(m_cycles as usize);
+        let mut buf = [0u8; OAM_DMA_LEN];
+        for i in 0..n {
+            buf[i] = self.read8_unrestricted(base.wrapping_add((start + i) as u16));
+        }
+        self.oam[start..start + n].copy_from_slice(&buf[..n]);
+        self.dma.index = (start + n) as u16;
+        if self.dma.index as usize >= OAM_DMA_LEN {
+            self.dma.active = false;
+        }
     }
 
     /// Advance the timer (and later other core peripherals) by CPU M-cycles.
@@ -110,7 +152,9 @@ impl<
     }
 
     /// Advance peripherals by system T-cycles; ORs IRQ lines into `IF`.
+    /// Also advances OAM DMA by `t_cycles / 4` M-cycles.
     pub fn tick_t_cycles(&mut self, t_cycles: u32) {
+        self.tick_oam_dma(t_cycles / 4);
         let irq = self.timer.tick(t_cycles).merge(self.ppu.tick(t_cycles));
         if irq.bits != 0 {
             if let Some(i) = Self::io_index(0xFF0F) {
@@ -301,31 +345,18 @@ impl<
 > Bus for MemoryBus<ROM_SIZE, WRAM_SIZE, HRAM_SIZE, IO_SIZE, IE_SIZE>
 {
     fn read8(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x7FFF => {
-                let local = addr as usize;
-                if local < ROM_SIZE {
-                    self.rom.read(addr)
-                } else {
-                    Some(0xFF)
-                }
-            }
-            0x8000..=0x9FFF => Some(self.vram[(addr - 0x8000) as usize]),
-            0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
-            0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
-            a if Joypad::handles(a) => Some(self.joypad.read(a)),
-            a if Serial::handles(a) => Some(self.serial.read(a)),
-            a if Timer::handles(a) => Some(self.timer.read(a)),
-            a if Dma::handles(a) => Some(self.dma.read(a)),
-            a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
-            0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
-            0xFF80..=0xFFFE => Self::hram_index(addr).and_then(|i| self.hram.read(i)),
-            0xFFFF => self.ie.read(0),
-            _ => Some(0xFF),
+        // During OAM DMA, CPU reads outside HRAM / FF46 see open-bus-ish `$FF`.
+        if self.dma.active && !Self::cpu_ok_during_dma(addr) {
+            return Some(0xFF);
         }
+        self.read8_raw(addr)
     }
 
     fn write8(&mut self, addr: u16, data: u8) -> bool {
+        // During OAM DMA, CPU writes outside HRAM / FF46 are ignored.
+        if self.dma.active && !Self::cpu_ok_during_dma(addr) {
+            return true;
+        }
         match addr {
             0x0000..=0x7FFF => true, // ROM: ignore write, still "ok"
             0x8000..=0x9FFF => {
@@ -357,7 +388,6 @@ impl<
             }
             a if Dma::handles(a) => {
                 self.dma.write(a, data);
-                self.run_oam_dma_instant();
                 true
             }
             a if DmgPpu::handles(a) => {
@@ -500,7 +530,7 @@ mod tests {
         assert!(Joypad::handles(0xFF00));
     }
 
-    /// Instant OAM DMA: WRAM $C000 → OAM $FE00 (checklist smoke + full table).
+    /// Timed OAM DMA: WRAM $C000 → OAM $FE00 over 160 M-cycles.
     #[test]
     fn oam_dma_ff46_copies_wram_to_oam() {
         use peripherals::Dma;
@@ -509,14 +539,53 @@ mod tests {
         for i in 0..160u16 {
             assert!(bus.write8(0xC000 + i, i as u8));
         }
+        assert!(bus.write8(0xC000, 0xAB)); // first byte distinguishable
         assert!(bus.write8(0xFF46, 0xC0));
         assert_eq!(bus.read8(0xFF46), Some(0xC0));
         assert!(Dma::handles(0xFF46));
         assert!(!DmgPpu::handles(0xFF46));
-        assert!(!bus.dma.active, "instant DMA finishes on write");
-        for i in 0..160u16 {
+        assert!(bus.dma.active, "DMA starts on write");
+        assert_eq!(bus.oam[0], 0, "no bytes until tick");
+
+        bus.tick_m_cycles(1);
+        assert_eq!(bus.oam[0], 0xAB, "one M → one byte in OAM buffer");
+        // Mid-DMA: OAM CPU read is blocked → $FF, but buffer has the byte.
+        assert_eq!(bus.read8(0xFE00), Some(0xFF));
+        assert!(bus.dma.active);
+
+        for _ in 0..159 {
+            bus.tick_m_cycles(1);
+        }
+        assert!(!bus.dma.active, "160 M-cycles finish DMA");
+        assert_eq!(bus.read8(0xFE00), Some(0xAB));
+        for i in 1..160u16 {
             assert_eq!(bus.read8(0xFE00 + i), Some(i as u8), "OAM[{i}]");
         }
+    }
+
+    /// Mid-DMA: WRAM reads `$FF`; HRAM still works; WRAM write ignored.
+    #[test]
+    fn oam_dma_cpu_access_limited_to_hram() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xC000, 0xAB));
+        assert!(bus.write8(0xFF80, 0x11));
+        assert!(bus.write8(0xFF46, 0xC0));
+        bus.tick_m_cycles(1);
+        assert!(bus.dma.active);
+
+        assert_eq!(bus.read8(0xC000), Some(0xFF), "WRAM blocked");
+        assert_eq!(bus.read8(0xFF80), Some(0x11), "HRAM ok");
+        assert!(bus.write8(0xC001, 0x99)); // ignored
+        assert!(bus.write8(0xFF81, 0x22));
+        assert_eq!(bus.read8(0xFF81), Some(0x22));
+
+        for _ in 0..159 {
+            bus.tick_m_cycles(1);
+        }
+        assert!(!bus.dma.active);
+        assert_eq!(bus.read8(0xC000), Some(0xAB), "WRAM restored after DMA");
+        // C001 was not written during DMA.
+        assert_eq!(bus.read8(0xC001), Some(0x00));
     }
 
     /// After DMA, the same OAM buffer is what the PPU composites.
@@ -536,6 +605,10 @@ mod tests {
             assert!(bus.write8(0xC000 + i, 0));
         }
         assert!(bus.write8(0xFF46, 0xC0));
+        for _ in 0..160 {
+            bus.tick_m_cycles(1);
+        }
+        assert!(!bus.dma.active);
 
         bus.ppu.LCDC = 0x93; // LCD + OBJ + BG + $8000
         bus.ppu.BGP = 0xE4;

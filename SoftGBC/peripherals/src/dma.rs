@@ -1,7 +1,7 @@
 //! OAM DMA (`FF46`) — copy 160 bytes into OAM (`$FE00`–`$FE9F`).
 //!
-//! Instant model first (enough for sprites). Timed DMA can replace
-//! [`Dma::run_instant`] later without changing the FF46 write API.
+//! Hardware takes ~160 M-cycles (one byte per M). SoftGBC uses [`Dma::tick_m`]
+//! for that; [`Dma::run_instant`] remains for unit helpers / finish-now.
 
 use crate::mmio::IoDevice;
 
@@ -12,8 +12,10 @@ pub const OAM_DMA_LEN: usize = 0xA0;
 pub struct Dma {
     /// Last value written to `FF46` (source page = `page << 8`).
     pub page: u8,
-    /// `true` after a write until the transfer finishes.
+    /// `true` after a write until all [`OAM_DMA_LEN`] bytes are copied.
     pub active: bool,
+    /// Next OAM offset to write (`0..OAM_DMA_LEN`).
+    pub index: u16,
 }
 
 impl Dma {
@@ -21,6 +23,7 @@ impl Dma {
         Self {
             page: 0,
             active: false,
+            index: 0,
         }
     }
 
@@ -29,20 +32,42 @@ impl Dma {
         u16::from(self.page) << 8
     }
 
-    /// Instant OAM DMA: copy [`OAM_DMA_LEN`] bytes via `read8`, then clear `active`.
-    ///
-    /// Supported sources in SoftGBC: any address `read8` can serve (typically
-    /// WRAM `$C000`–`$DFFF`). Restricted regions follow whatever the bus returns.
-    pub fn run_instant<F>(&mut self, mut read8: F, oam: &mut [u8])
+    /// Advance DMA by up to `m_cycles` bytes (1 byte / M-cycle). Returns unused M.
+    pub fn tick_m<F>(&mut self, mut m_cycles: u32, mut read8: F, oam: &mut [u8]) -> u32
     where
         F: FnMut(u16) -> u8,
     {
+        if !self.active {
+            return m_cycles;
+        }
         debug_assert!(oam.len() >= OAM_DMA_LEN);
         let base = self.src_base();
-        for i in 0..OAM_DMA_LEN {
-            oam[i] = read8(base.wrapping_add(i as u16));
+        while self.active && m_cycles > 0 {
+            let i = self.index as usize;
+            if i >= OAM_DMA_LEN {
+                self.active = false;
+                break;
+            }
+            oam[i] = read8(base.wrapping_add(self.index));
+            self.index = self.index.saturating_add(1);
+            m_cycles -= 1;
+            if self.index as usize >= OAM_DMA_LEN {
+                self.active = false;
+            }
         }
-        self.active = false;
+        m_cycles
+    }
+
+    /// Instant OAM DMA: copy all remaining (or a fresh full table) now.
+    pub fn run_instant<F>(&mut self, read8: F, oam: &mut [u8])
+    where
+        F: FnMut(u16) -> u8,
+    {
+        if !self.active {
+            self.active = true;
+            self.index = 0;
+        }
+        let _ = self.tick_m(OAM_DMA_LEN as u32, read8, oam);
     }
 }
 
@@ -64,12 +89,23 @@ impl IoDevice for Dma {
     fn write(&mut self, _addr: u16, data: u8) {
         self.page = data;
         self.active = true;
+        self.index = 0;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wram_reader(wram: &[u8; 0x2000]) -> impl Fn(u16) -> u8 + '_ {
+        move |addr| {
+            if (0xC000..=0xDFFF).contains(&addr) {
+                wram[(addr - 0xC000) as usize]
+            } else {
+                0xFF
+            }
+        }
+    }
 
     #[test]
     fn write_ff46_marks_active_and_stores_page() {
@@ -78,6 +114,7 @@ mod tests {
         dma.write(0xFF46, 0xC0);
         assert!(dma.active);
         assert_eq!(dma.page, 0xC0);
+        assert_eq!(dma.index, 0);
         assert_eq!(dma.read(0xFF46), 0xC0);
         assert_eq!(dma.src_base(), 0xC000);
     }
@@ -88,26 +125,16 @@ mod tests {
         let mut dma = Dma::new();
         let mut oam = [0u8; OAM_DMA_LEN];
         let mut wram = [0u8; 0x2000];
-        wram[0] = 0xAB; // $C000
+        wram[0] = 0xAB;
 
         dma.write(0xFF46, 0xC0);
         assert!(dma.active);
-        dma.run_instant(
-            |addr| {
-                if (0xC000..=0xDFFF).contains(&addr) {
-                    wram[(addr - 0xC000) as usize]
-                } else {
-                    0xFF
-                }
-            },
-            &mut oam,
-        );
+        dma.run_instant(wram_reader(&wram), &mut oam);
 
         assert_eq!(oam[0], 0xAB);
         assert!(!dma.active);
     }
 
-    /// Checklist: fill C000..C09F with i; DMA 0xC0; all 160 OAM bytes match.
     #[test]
     fn instant_dma_copies_full_160_bytes() {
         let mut dma = Dma::new();
@@ -118,20 +145,46 @@ mod tests {
         }
 
         dma.write(0xFF46, 0xC0);
-        dma.run_instant(
-            |addr| {
-                if (0xC000..=0xDFFF).contains(&addr) {
-                    wram[(addr - 0xC000) as usize]
-                } else {
-                    0xFF
-                }
-            },
-            &mut oam,
-        );
+        dma.run_instant(wram_reader(&wram), &mut oam);
 
         for i in 0..OAM_DMA_LEN {
             assert_eq!(oam[i], i as u8, "oam[{i}]");
         }
         assert!(!dma.active);
+    }
+
+    /// Checklist: tick(1) → one byte; after 160 → inactive.
+    #[test]
+    fn timed_dma_one_byte_per_m_cycle() {
+        let mut dma = Dma::new();
+        let mut oam = [0u8; OAM_DMA_LEN];
+        let mut wram = [0u8; 0x2000];
+        for i in 0..OAM_DMA_LEN {
+            wram[i] = (i as u8).wrapping_add(1);
+        }
+
+        dma.write(0xFF46, 0xC0);
+        assert_eq!(dma.index, 0);
+
+        let left = dma.tick_m(1, wram_reader(&wram), &mut oam);
+        assert_eq!(left, 0);
+        assert_eq!(oam[0], 1);
+        assert_eq!(oam[1], 0, "second byte not yet");
+        assert!(dma.active);
+        assert_eq!(dma.index, 1);
+
+        let left = dma.tick_m(159, wram_reader(&wram), &mut oam);
+        assert_eq!(left, 0);
+        assert!(!dma.active);
+        assert_eq!(dma.index, 160);
+        for i in 0..OAM_DMA_LEN {
+            assert_eq!(oam[i], (i as u8).wrapping_add(1), "oam[{i}]");
+        }
+
+        // Idle ticks are no-ops.
+        oam[0] = 0xEE;
+        let left = dma.tick_m(10, wram_reader(&wram), &mut oam);
+        assert_eq!(left, 10);
+        assert_eq!(oam[0], 0xEE);
     }
 }

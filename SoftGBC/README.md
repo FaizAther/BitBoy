@@ -252,9 +252,9 @@ mem[C000]=0xAB → write FF46=0xC0 → read(FE00)==0xAB
 ```
   **Done when:** smoke test green (`oam_dma_ff46_copies_wram_to_oam`).
 
-- [ ] **Timed DMA (later)**  
+- [x] **Timed DMA (later)**  
   **What:** ~160 M-cycles + access rules.  
-  **Done when:** see Dma README.
+  **Done when:** see Dma README (`tick_m` / bus HRAM-only during DMA).
 
 ---
 

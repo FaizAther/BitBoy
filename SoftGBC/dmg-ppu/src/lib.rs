@@ -87,7 +87,15 @@ impl DmgPpu {
     }
 
     /// Current PPU mode 0–3 from LY + line cycles.
+    ///
+    /// Pan Docs: when the LCD/PPU is disabled (`LCDC.7=0`), STAT mode bits
+    /// report **0**. Games (Dr. Mario, Tetris DX start, …) turn the LCD off
+    /// and spin until mode reads 0 before rewriting VRAM — reporting Mode 2
+    /// here soft-locks or bounces them back to the title screen.
     pub fn mode_now(&self) -> u8 {
+        if !LCD_ENABLE.is_set(self.LCDC) {
+            return 0;
+        }
         if self.ly >= 144 {
             return 1;
         }
@@ -101,6 +109,15 @@ impl DmgPpu {
     }
 
     pub fn tick(&mut self, mut t_cycles: u32) -> IrqLines {
+        // Pan Docs: while LCD is off, LY stays 0 and the PPU does not run.
+        // Tetris DX (and many games) disable the LCD to reload VRAM, then
+        // re-enable expecting LY=0 — advancing LY while "off" desyncs them.
+        if !LCD_ENABLE.is_set(self.LCDC) {
+            self.ly = 0;
+            self.cycles = 0;
+            return IrqLines::NONE;
+        }
+
         let mut irq = IrqLines::NONE;
         let t_c_count: u8 = (t_cycles / MAX_COLUMNS as u32) as u8;
         let ly_modified = self.ly;
@@ -457,7 +474,18 @@ impl IoDevice for DmgPpu {
 
     fn write(&mut self, addr: u16, data: u8) {
         match addr {
-            0xFF40 => self.LCDC = data,
+            0xFF40 => {
+                let was_on = LCD_ENABLE.is_set(self.LCDC);
+                let now_on = LCD_ENABLE.is_set(data);
+                self.LCDC = data;
+                if was_on != now_on {
+                    // Off→on or on→off: restart at LY=0 (Pan Docs LCD enable).
+                    self.ly = 0;
+                    self.cycles = 0;
+                    self.prev_mode = self.mode_now();
+                    self.lyc_equal_prev = self.ly == self.LYC;
+                }
+            }
             0xFF41 => {
                 self.STAT = data & INT_SELECT_MASK;
                 // Enabling a select while already in that condition does not
@@ -485,9 +513,16 @@ mod tests {
     use super::*;
     use peripherals::irq::IF_STAT;
 
+    /// Power-on LCDC is 0 (LCD off). Timing tests must enable bit 7.
+    fn with_lcd_on() -> DmgPpu {
+        let mut ppu = DmgPpu::new();
+        ppu.write(0xFF40, 0x80);
+        ppu
+    }
+
     #[test]
     pub fn test_single() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         assert_eq!(ppu.ly, 0);
         for ly in 0..MAX_ROWS as u8 {
             for column in 0..MAX_COLUMNS as u16 {
@@ -505,7 +540,7 @@ mod tests {
 
     #[test]
     pub fn test_extra() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.tick(MAX_COLUMNS as u32);
         assert_eq!(ppu.ly, 1);
         assert_eq!(ppu.cycles, 0);
@@ -528,7 +563,7 @@ mod tests {
             (70_224, 0),   // 154 * MAX_COLUMNS
         ];
         for (t, want_ly) in cases {
-            let mut ppu = DmgPpu::new();
+            let mut ppu = with_lcd_on();
             ppu.tick(t as u32);
             assert_eq!(ppu.ly, want_ly, "after {t} T-cycles");
         }
@@ -555,8 +590,50 @@ mod tests {
     }
 
     #[test]
+    fn lcd_off_freezes_ly_at_zero_and_raises_no_vblank() {
+        // Pan Docs: while LCD is off, LY stays 0 and the PPU does not run.
+        let mut ppu = DmgPpu::new();
+        assert_eq!(ppu.LCDC & 0x80, 0, "power-on LCD off");
+        ppu.ly = 50;
+        ppu.cycles = 100;
+        let irq = ppu.tick(154 * MAX_COLUMNS as u32);
+        assert_eq!(ppu.ly, 0);
+        assert_eq!(ppu.cycles, 0);
+        assert_eq!(irq.bits & IF_VBLANK, 0);
+    }
+
+    #[test]
+    fn lcd_enable_edge_resets_ly() {
+        let mut ppu = DmgPpu::new();
+        ppu.write(0xFF40, 0x80); // LCD on
+        ppu.tick(MAX_COLUMNS as u32 * 20);
+        assert!(ppu.ly >= 20);
+        // Disable then re-enable — hardware restarts at LY=0.
+        ppu.write(0xFF40, 0x00);
+        assert_eq!(ppu.ly, 0);
+        ppu.write(0xFF40, 0x80);
+        assert_eq!(ppu.ly, 0);
+        assert_eq!(ppu.cycles, 0);
+    }
+
+    #[test]
+    fn lcd_off_stat_mode_reads_zero() {
+        // Pan Docs + GBEDG: after LCD disable, STAT mode bits must be 0
+        // (not Mode 2 from LY=0/cycles=0). Games poll this before VRAM copy.
+        let mut ppu = DmgPpu::new();
+        ppu.write(0xFF40, 0x80);
+        ppu.tick(MODE2_DOTS as u32 + 10); // would be Mode 3 if LCD on
+        assert_eq!(ppu.mode_now(), 3);
+        ppu.write(0xFF40, 0x00);
+        assert_eq!(ppu.ly, 0);
+        assert_eq!(ppu.mode_now(), 0);
+        assert_eq!(MODE.get(ppu.read(0xFF41)), 0);
+    }
+
+    #[test]
     fn ff44_tracks_ly_and_ignores_writes() {
         let mut ppu = DmgPpu::new();
+        ppu.write(0xFF40, 0x80); // LCD must be on for LY to advance
         assert_eq!(ppu.read(0xFF44), 0);
         ppu.tick(MAX_COLUMNS as u32);
         assert_eq!(ppu.read(0xFF44), 1);
@@ -574,7 +651,7 @@ mod tests {
 
     #[test]
     fn mode_walk_visible_line() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         assert_eq!(ppu.mode_now(), 2);
         assert_eq!(MODE.get(ppu.read(0xFF41)), 2);
 
@@ -597,7 +674,7 @@ mod tests {
 
     #[test]
     fn mode_1_during_vblank() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.tick(144 * MAX_COLUMNS as u32);
         assert_eq!(ppu.ly, 144);
         assert_eq!(ppu.mode_now(), 1);
@@ -606,7 +683,7 @@ mod tests {
 
     #[test]
     fn lyc_eq_flag_tracks_coincidence() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.write(0xFF45, 0);
         assert!(LYC_EQ.is_set(ppu.read(0xFF41)));
 
@@ -620,7 +697,7 @@ mod tests {
 
     #[test]
     fn stat_write_keeps_selects_mode_stays_live() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.write(0xFF41, 0xFF);
         assert_eq!(ppu.read(0xFF41) & INT_SELECT_MASK, INT_SELECT_MASK);
         assert_eq!(MODE.get(ppu.read(0xFF41)), 2);
@@ -628,7 +705,7 @@ mod tests {
 
     #[test]
     fn lyc_stat_irq_edge_once() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.write(0xFF41, LYC_INT.mask_in_place());
         ppu.write(0xFF45, 1);
 
@@ -642,7 +719,7 @@ mod tests {
 
     #[test]
     fn mode2_enter_stat_irq_on_new_line() {
-        let mut ppu = DmgPpu::new();
+        let mut ppu = with_lcd_on();
         ppu.write(0xFF41, MODE2_INT.mask_in_place());
 
         // Leave Mode 2 → Mode 0 on line 0, then enter Mode 2 on line 1.

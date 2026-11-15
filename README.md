@@ -4,12 +4,13 @@ An end-to-end, open-source Game Boy–class development platform:
 
 **C / Rust / Zig → LLVM IR → SM83 machine code → QEMU / SameBoy / Verilog / FPGA**
 
-The project has four major components:
+The project has five major components:
 
 1. **SM83 LLVM backend** — compile high-level languages to Game Boy CPU code.
 2. **QEMU SM83 target** — run and debug compiled programs in a system emulator.
-3. **SM83 Verilog/SystemVerilog RTL** — implement the CPU and Game Boy-compatible SoC.
-4. **FPGA implementation and verification** — run the same ROMs on real hardware and prove RTL behaviour matches the software models.
+3. **GBC game SDK** — runtime, hardware libraries, asset tools, and templates for agent-created games.
+4. **SM83 Verilog/SystemVerilog RTL** — implement the CPU and Game Boy-compatible SoC.
+5. **FPGA implementation and verification** — run the same ROMs on real hardware and prove RTL behaviour matches the software models.
 
 ```text
 C / Rust / Zig frontend
@@ -159,6 +160,7 @@ Chunk J  Full SoC + FPGA bring-up   depends on D/E, I, H          ┘
 
 - Target registration, registers, TableGen encodings.
 - Asm parser/printer, MC emitter, flat ROM or ELF + linker script.
+- Checklists: [`docs/llvm/README.md`](docs/llvm/README.md) (contracts through installed toolchain).
 
 **Done when:** `llvm-mc` turns hand-written SM83 asm into a ROM the ISS runs.
 
@@ -168,8 +170,21 @@ Chunk J  Full SoC + FPGA bring-up   depends on D/E, I, H          ┘
 
 - Instruction selection, calling convention, stack frames, runtime helpers.
 - `runtime/crt0`, minimal libc stubs, linker scripts.
+- Checklists: [`docs/llvm/README.md`](docs/llvm/README.md).
 
 **Done when:** the sample `sum(20,22)` program writes `0x2E` to `0xFF80` under the ISS.
+
+### GBC game SDK
+
+**Scope:** agent-friendly software layer above Chunks C–D and the SoftGBC device
+models.
+
+- One manifest/CLI, C runtime, graphics/input/audio/save/banking APIs.
+- Deterministic asset conversion, replay tests, examples, and build reports.
+- Checklists: [`docs/sdk/README.md`](docs/sdk/README.md).
+
+**Done when:** an agent can generate a new project, build a valid `.gbc`, and
+pass a scripted playable vertical-slice test without editing generated files.
 
 ### Chunk E — QEMU SM83
 
@@ -177,6 +192,7 @@ Chunk J  Full SoC + FPGA bring-up   depends on D/E, I, H          ┘
 
 - `target/sm83` TCG, minimal machine, ROM load, debug-exit device.
 - Trace hooks compatible with Chunk A.
+- Checklists: [`docs/qemu/README.md`](docs/qemu/README.md) (approach + phase docs).
 
 **Done when:** LLVM-built (or hand) ROMs that pass ISS also pass QEMU with matching exit status / key state.
 

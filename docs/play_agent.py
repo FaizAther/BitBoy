@@ -265,13 +265,9 @@ def tap(client: PlayClient, bits: int, hold_s: float = 0.06, gap_s: float = 0.08
     time.sleep(gap_s)
 
 
-def in_gameplay_screen(rgb: bytes) -> bool:
-    """True when the Marathon playfield brick well is visible (not title/menus)."""
-    if len(rgb) < SCREEN_W * SCREEN_H * 3:
-        return False
-    if _is_title_menu(rgb):
-        return False
-    # Left brick wall ~x=8..14: many dark pixels, but NOT a full-screen checkerboard.
+def _has_marathon_well(rgb: bytes) -> bool:
+    """Brick playfield wall + light HUD — shared by LIVE and DEMO."""
+    # Left brick wall ~x=8..14: many dark pixels.
     dark = 0
     for y in range(24, 120, 2):
         i = (y * SCREEN_W + 10) * 3
@@ -286,9 +282,36 @@ def in_gameplay_screen(rgb: bytes) -> bool:
     return dark >= 24 and right_light >= 8
 
 
+def in_gameplay_screen(rgb: bytes) -> bool:
+    """True when the Marathon playfield brick well is visible (not title/menus)."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
+    # Check well FIRST — title heuristic false-positives on the brick+white
+    # top-left of an empty Marathon start (uniq≤6 mid-gray), which made the
+    # agent think LIVE was the title and mash Start / abandon the game.
+    return _has_marathon_well(rgb)
+
+
 def looks_like_demo(rgb: bytes) -> bool:
-    """Attract DEMO badge mid-well — only when already on a playfield screen."""
+    """Attract DEMO: wide bottom garbage + mid-well badge ink.
+
+    Empty Marathon start must not match. A LIVE well with a tall *narrow*
+    stack (normal play) also must not match — that false DEMO made the agent
+    hit Start and dump a real game.
+    """
     if not in_gameplay_screen(rgb):
+        return False
+    # Attract garbage is wide across the well; a single-column LIVE stack is not.
+    cols_hit = 0
+    for col in range(PF_COLS):
+        x = PF_X0 + col * CELL + CELL // 2
+        dark = 0
+        for y in range(100, 130):
+            if rgb[(y * SCREEN_W + x) * 3] < 120:
+                dark += 1
+        if dark >= 8:
+            cols_hit += 1
+    if cols_hit < 6:
         return False
     dark = 0
     total = 0
@@ -299,7 +322,7 @@ def looks_like_demo(rgb: bytes) -> bool:
             if rgb[i] < 140:
                 dark += 1
     ratio = dark / max(total, 1)
-    return 0.08 <= ratio <= 0.45
+    return 0.10 <= ratio <= 0.45
 
 
 def exit_demo_if_needed(client: PlayClient, fp, rgb: bytes | None) -> bool:
@@ -328,57 +351,91 @@ def _is_title_menu(rgb: bytes) -> bool:
     """Checkerboard title: mid-gray tiles in the top-left, not copyright white."""
     if len(rgb) < SCREEN_W * SCREEN_H * 3:
         return False
+    if _has_marathon_well(rgb):
+        return False
     vals = [rgb[(y * SCREEN_W + x) * 3] for y in range(0, 40) for x in range(0, 40)]
     avg = sum(vals) // max(len(vals), 1)
     uniq = len(set(vals))
     return uniq <= 6 and 40 < avg < 180
 
 
+def _white_frac(rgb: bytes) -> float:
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return 0.0
+    n = sum(1 for i in range(0, len(rgb), 3) if rgb[i] > 230)
+    return n / (SCREEN_W * SCREEN_H)
+
+
 def _looks_like_name_keyboard(rgb: bytes) -> bool:
-    """Letter grid (not file-select list): dense glyphs in lower panel."""
+    """Letter grid only — high white bg + dense ink in lower panel."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
     if _is_title_menu(rgb) or in_gameplay_screen(rgb):
+        return False
+    if _white_frac(rgb) < 0.62:
         return False
     dark = 0
     for y in range(100, 130):
         for x in range(16, 144):
             if rgb[(y * SCREEN_W + x) * 3] < 90:
                 dark += 1
-    return dark >= 400
+    return dark >= 450
 
 
-def _white_frac(rgb: bytes) -> float:
-    n = sum(1 for i in range(0, len(rgb), 3) if rgb[i] > 230)
-    return n / (SCREEN_W * SCREEN_H)
+def _looks_like_mode_select(rgb: bytes) -> bool:
+    """Marathon/Ultra/40LINES folder cards on gray (not white file menus)."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
+    if _is_title_menu(rgb) or in_gameplay_screen(rgb):
+        return False
+    wf = _white_frac(rgb)
+    # Mode folder is gray; level select is whiter.
+    if not (0.18 < wf < 0.50):
+        return False
+    frames = 0
+    for y in (36, 52, 68, 84):
+        row = [rgb[(y * SCREEN_W + x) * 3] for x in range(20, 120)]
+        if min(row) < 50 and max(row) > 180:
+            frames += 1
+    return frames >= 2
+
+
+def _looks_like_level_select(rgb: bytes) -> bool:
+    """Marathon LEVEL 0..9 slider screen (whiter than mode folder)."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
+    if _is_title_menu(rgb) or in_gameplay_screen(rgb):
+        return False
+    wf = _white_frac(rgb)
+    if not (0.50 <= wf < 0.78):
+        return False
+    # Slider / header ink present; not a letter keyboard (those are denser below).
+    band = [rgb[(y * SCREEN_W + x) * 3] for y in range(40, 70) for x in range(20, 140)]
+    if not band:
+        return False
+    dark = sum(1 for v in band if v < 60)
+    return min(band) < 40 and 30 <= dark <= 400
 
 
 def classify_stage(rgb: bytes) -> int:
     """Fitness stage: higher is better. DEMO = -1 penalty."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return 0
     if looks_like_demo(rgb):
         return -1
     if in_gameplay_screen(rgb):
         return 5
     if _is_title_menu(rgb):
         return 1
+    # Keyboard before level — both are whitish; mis-order bounced us off LIVE.
     if _looks_like_name_keyboard(rgb):
         return 2
-    wf = _white_frac(rgb)
-    dark_edge = 0
-    for y in range(0, SCREEN_H, 4):
-        for x in (2, SCREEN_W - 3):
-            if rgb[(y * SCREEN_W + x) * 3] < 60:
-                dark_edge += 1
-    if dark_edge >= 20 and 0.25 < wf < 0.55:
-        mid_dark = sum(
-            1
-            for y in range(40, 70)
-            for x in range(40, 120)
-            if rgb[(y * SCREEN_W + x) * 3] < 80
-        )
-        return 4 if mid_dark > 120 else 3
-    if wf > 0.55:
-        return 2
-    if wf > 0.35:
+    if _looks_like_mode_select(rgb):
         return 3
+    if _looks_like_level_select(rgb):
+        return 4
+    if _white_frac(rgb) > 0.55:
+        return 2
     return 0
 
 
@@ -439,16 +496,27 @@ def dismiss_copyright(client: PlayClient, budget_s: float = 8.0) -> None:
         tap(client, A, 0.16, 0.28)
 
 
+def _name_keyboard_end(client: PlayClient) -> None:
+    tap(client, DOWN, 0.22, 0.32)
+    tap(client, DOWN, 0.22, 0.32)
+    for _ in range(12):
+        tap(client, RIGHT, 0.1, 0.14)
+    tap(client, A, 0.3, 0.5)
+    tap(client, RIGHT, 0.1, 0.14)
+    tap(client, A, 0.3, 0.5)
+
+
 def run_menu_genome(
     client: PlayClient,
     weights: list[float],
     seconds: float,
     rng: random.Random,
 ) -> tuple[int, int]:
-    """Drive menus with genome. Returns (best_stage, final_stage)."""
+    """Drive menus with genome + stage scripts. Returns (best_stage, final_stage)."""
     dismiss_copyright(client)
     best = 0
     final = 0
+    kbd_tries = 0
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         code, rgb = client.frame_rgb()
@@ -456,6 +524,8 @@ def run_menu_genome(
             tap(client, A, 0.15, 0.3)
             continue
         rgb_b = bytes(rgb)
+        if len(rgb_b) < SCREEN_W * SCREEN_H * 3:
+            continue
         st = classify_stage(rgb_b)
         final = st
         if st > best:
@@ -463,34 +533,44 @@ def run_menu_genome(
         if st == 5:
             break
         if st == -1:
+            # Attract playfield — Start returns to title; keep going toward 1P path.
             tap(client, START, 0.2, 0.4)
             continue
-        # Name keyboard: scripted END (random letters never learn this).
+        # Mode / level: confirm hard — short taps can bounce back to title.
+        if st == 3:
+            tap(client, A, 0.3, 0.65)
+            continue
+        if st == 4:
+            for _ in range(3):
+                hold(client, A, 0.35)
+                time.sleep(0.55)
+            continue
+        if st == 0:
+            # Blank/transition frames — wait, don't mash directionals.
+            tap(client, A, 0.12, 0.4)
+            continue
         if _looks_like_name_keyboard(rgb_b):
-            tap(client, DOWN, 0.22, 0.32)
-            tap(client, DOWN, 0.22, 0.32)
-            for _ in range(12):
-                tap(client, RIGHT, 0.1, 0.14)
-            tap(client, A, 0.3, 0.5)
-            tap(client, RIGHT, 0.1, 0.14)
-            tap(client, A, 0.3, 0.5)
-            # Escape hatch if still on grid.
-            code2, rgb2 = client.frame_rgb()
-            if (
-                code2 == 200
-                and isinstance(rgb2, (bytes, bytearray))
-                and _looks_like_name_keyboard(bytes(rgb2))
-            ):
-                for _ in range(2):
+            kbd_tries += 1
+            _name_keyboard_end(client)
+            if kbd_tries >= 2:
+                for _ in range(3):
                     tap(client, B, 0.2, 0.35)
+                for _ in range(4):
+                    tap(client, DOWN, 0.18, 0.28)
+                tap(client, A, 0.25, 0.5)  # EXIT → title (cursor often 1PLAYER after)
+                kbd_tries = 0
             continue
-        btn = sample_action(weights, rng)
-        # On title, bias UP then A (genome still learns; this seeds selection).
-        if _is_title_menu(rgb_b) and rng.random() < 0.45:
-            tap(client, UP, 0.22, 0.35)
+        kbd_tries = 0
+        if _is_title_menu(rgb_b):
+            for _ in range(3):
+                tap(client, UP, 0.2, 0.32)
+            tap(client, A, 0.24, 0.5)
+            continue
+        # File / other text menus: mostly A, occasional UP/RIGHT from genome.
+        if rng.random() < 0.65:
             tap(client, A, 0.22, 0.45)
-            continue
-        tap(client, btn, 0.18, 0.32)
+        else:
+            tap(client, sample_action(weights, rng), 0.18, 0.32)
     return best, final
 
 
@@ -507,13 +587,15 @@ def enter_tetris(client: PlayClient, fp, genome: dict | None = None) -> None:
     if code != 200:
         log_line(fp, f"menu: WARN input rejected http={code} body={ack}")
     rng = random.Random(0xC0FFEE ^ int(time.time()) & 0xFFFF)
-    best, final = run_menu_genome(client, weights, seconds=55.0, rng=rng)
+    best, final = run_menu_genome(client, weights, seconds=90.0, rng=rng)
     log_line(
         fp,
         f"menu: stage best={STAGE_NAMES.get(best, best)} "
         f"final={STAGE_NAMES.get(final, final)}",
     )
-    if best < 5:
+    if best >= 5:
+        log_line(fp, "menu: done — LIVE playfield")
+    else:
         log_line(fp, "menu: WARN not LIVE yet — play loop may still recover")
 
 
@@ -716,8 +798,12 @@ def analyze_http(prev: dict | None, status: dict, debug: dict) -> list[str]:
     if prev:
         if running and prev.get("frames") == frames and frames is not None:
             flags.append(f"frame_stall frames={frames}")
+        # Tetris DX spends most of LIVE in HALT at $0283 waiting for VBlank —
+        # frames advancing with a stable PC/halt is normal, not a hang.
+        vblank_wait = pc == 0x0283 and frames is not None and prev.get("frames") is not None and frames > prev["frames"]
         if (
-            frames is not None
+            not vblank_wait
+            and frames is not None
             and prev.get("frames") is not None
             and frames > prev["frames"]
             and pc is not None
@@ -725,7 +811,12 @@ def analyze_http(prev: dict | None, status: dict, debug: dict) -> list[str]:
             and (prev.get("pc_same", 0) + 1) >= 8
         ):
             flags.append(f"pc_stuck pc=0x{pc:04X}")
-        if halted and prev.get("halted") and (prev.get("halt_same", 0) + 1) >= 12:
+        if (
+            not vblank_wait
+            and halted
+            and prev.get("halted")
+            and (prev.get("halt_same", 0) + 1) >= 12
+        ):
             flags.append("halted_stuck")
         ie = (debug.get("irq") or {}).get("ie")
         if ie is not None and (ie & 1) and prev.get("if_zero_streak", 0) >= 40:
@@ -833,6 +924,7 @@ def main() -> int:
         next_play = time.monotonic()
         next_vision = time.monotonic()
         next_gdb = time.monotonic() + 3.0
+        seen_live = False
 
         while deadline is None or time.monotonic() < deadline:
             try:
@@ -843,13 +935,30 @@ def main() -> int:
                     code, rgb = client.frame_rgb()
                     if code == 200 and isinstance(rgb, (bytes, bytearray)) and len(rgb) >= SCREEN_W * SCREEN_H * 3:
                         rgb_b = bytes(rgb)
-                        if exit_demo_if_needed(client, fp, rgb_b):
-                            # Re-enter Marathon after leaving attract mode.
-                            for _ in range(4):
-                                tap(client, A, 0.12, 0.4)
+                        st = classify_stage(rgb_b)
+                        if st == 5:
+                            seen_live = True
+                        # After a real Marathon start, a full well looks like
+                        # attract DEMO — never Start-exit once LIVE was seen.
+                        if not seen_live and exit_demo_if_needed(client, fp, rgb_b):
+                            last_heights = None
+                        elif st == 5:
+                            last_heights = column_heights(rgb_b)
+                        elif st in (3, 4):
+                            # Mode/level — confirm into play.
+                            tap(client, A, 0.28, 0.5)
+                            last_heights = None
+                        elif st < 5 and play_n > 0 and play_n % 48 == 0:
+                            log_line(fp, f"menu: stuck at {STAGE_NAMES.get(st, st)} — re-drive")
+                            run_menu_genome(
+                                client,
+                                list(genome.get("weights") or default_genome()),
+                                seconds=20.0,
+                                rng=random.Random(play_n),
+                            )
                             last_heights = None
                         else:
-                            last_heights = column_heights(rgb_b)
+                            last_heights = None
                     elif code == 503 or code == 0:
                         pass
                     else:

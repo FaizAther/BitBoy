@@ -3,6 +3,9 @@
 
 Sources:
   - SoftGBC crate READMEs + SoftGBC/*/docs/*.md
+  - docs/qemu/*.md (Chunk E QEMU SM83 checklists)
+  - docs/llvm/*.md (Chunks C-D compiler checklists)
+  - docs/sdk/*.md (agent-first GBC game SDK checklists)
   - docs/datasheets, docs/REFERENCES.md
   - docs/vendor/gbedg (and pandocs when listed)
 
@@ -11,6 +14,7 @@ Edit Markdown; never hand-edit docs/site/**/*.html.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -50,6 +54,41 @@ LEARN_AND_CRATE: list[tuple[str, Path, str]] = [
     ("Datasheets note", DOCS / "datasheets" / "README.md", "datasheets/readme.html"),
 ]
 
+# QEMU SM83 Chunk E (nav section separate from SoftGBC crates)
+QEMU_PAGES: list[tuple[str, Path, str]] = [
+    ("QEMU approach", DOCS / "qemu" / "README.md", "qemu/overview.html"),
+    ("Semantics contract", DOCS / "qemu" / "semantics.md", "qemu/semantics.html"),
+    ("00 Harness", DOCS / "qemu" / "00-harness.md", "qemu/00-harness.html"),
+    ("01 Skeleton", DOCS / "qemu" / "01-skeleton.md", "qemu/01-skeleton.html"),
+    ("02 Helper ISA", DOCS / "qemu" / "02-helper-isa.md", "qemu/02-helper-isa.html"),
+    ("03 Interrupts", DOCS / "qemu" / "03-interrupts.md", "qemu/03-interrupts.html"),
+    ("04 Board", DOCS / "qemu" / "04-board.md", "qemu/04-board.html"),
+    ("05 Parity", DOCS / "qemu" / "05-parity.md", "qemu/05-parity.html"),
+    ("06 TCG / gdb", DOCS / "qemu" / "06-tcg-debug.md", "qemu/06-tcg-debug.html"),
+]
+
+LLVM_PAGES: list[tuple[str, Path, str]] = [
+    ("LLVM approach", DOCS / "llvm" / "README.md", "llvm/overview.html"),
+    ("00 Contracts", DOCS / "llvm" / "00-contracts.md", "llvm/00-contracts.html"),
+    ("01 MC layer", DOCS / "llvm" / "01-mc.md", "llvm/01-mc.html"),
+    ("02 Object / link", DOCS / "llvm" / "02-object-link.md", "llvm/02-object-link.html"),
+    ("03 Code generation", DOCS / "llvm" / "03-codegen.md", "llvm/03-codegen.html"),
+    ("04 ABI", DOCS / "llvm" / "04-abi.md", "llvm/04-abi.html"),
+    ("05 Runtime / driver", DOCS / "llvm" / "05-runtime-driver.md", "llvm/05-runtime-driver.html"),
+    ("06 Validation", DOCS / "llvm" / "06-validation.md", "llvm/06-validation.html"),
+]
+
+SDK_PAGES: list[tuple[str, Path, str]] = [
+    ("SDK approach", DOCS / "sdk" / "README.md", "sdk/overview.html"),
+    ("00 Project / CLI", DOCS / "sdk" / "00-project-cli.md", "sdk/00-project-cli.html"),
+    ("01 Runtime", DOCS / "sdk" / "01-runtime.md", "sdk/01-runtime.html"),
+    ("02 Graphics / assets", DOCS / "sdk" / "02-graphics-assets.md", "sdk/02-graphics-assets.html"),
+    ("03 Input / loop", DOCS / "sdk" / "03-input-loop.md", "sdk/03-input-loop.html"),
+    ("04 Audio / save / banks", DOCS / "sdk" / "04-audio-save-banking.md", "sdk/04-audio-save-banking.html"),
+    ("05 Agent workflow", DOCS / "sdk" / "05-agent-workflow.md", "sdk/05-agent-workflow.html"),
+    ("06 Examples / validation", DOCS / "sdk" / "06-validation-examples.md", "sdk/06-validation-examples.html"),
+]
+
 GBEDG_PAGES: list[tuple[str, Path, str]] = [
     ("GBEDG home", VENDOR_GBEDG / "README.md", "gbedg/index.html"),
     ("Concepts", VENDOR_GBEDG / "concepts" / "index.md", "gbedg/concepts.html"),
@@ -77,6 +116,15 @@ PANDOCS_PAGES: list[tuple[str, Path, str]] = [
     ("Specifications", VENDOR_PANDOCS / "src" / "Specifications.md", "pandocs/specifications.html"),
 ]
 
+SOURCE_TO_HTML = {
+    (REPO / "README.md").resolve(): "index.html",
+    **{
+        source.resolve(): html
+        for pages in (LEARN_AND_CRATE, QEMU_PAGES, LLVM_PAGES, SDK_PAGES, GBEDG_PAGES, PANDOCS_PAGES)
+        for _, source, html in pages
+    },
+}
+
 MD = markdown.Markdown(
     extensions=["tables", "fenced_code", "toc", "sane_lists", "smarty"],
     extension_configs={"toc": {"permalink": False}},
@@ -85,7 +133,7 @@ MD = markdown.Markdown(
 STYLE = (DOCS / "assets" / "style.css")
 
 
-def rewrite_md_links(text: str, is_gbedg: bool) -> str:
+def rewrite_md_links(text: str, source: Path, html_rel: str, is_gbedg: bool) -> str:
     def repl_link(m: re.Match[str]) -> str:
         label, url = m.group(1), m.group(2)
         if url.startswith(("http://", "https://", "#", "mailto:")):
@@ -96,6 +144,11 @@ def rewrite_md_links(text: str, is_gbedg: bool) -> str:
             frag = "#" + frag
         if not path_part:
             return m.group(0)
+        source_target = (source.parent / path_part).resolve()
+        site_target = SOURCE_TO_HTML.get(source_target)
+        if site_target:
+            relative = os.path.relpath(site_target, start=Path(html_rel).parent).replace(os.sep, "/")
+            return f"[{label}]({relative}{frag})"
         if path_part.endswith(".md") and is_gbedg:
             stem = Path(path_part).stem
             if stem == "index":
@@ -109,12 +162,12 @@ def rewrite_md_links(text: str, is_gbedg: bool) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl_link, text)
 
 
-def render_body(source: Path, is_gbedg: bool = False) -> str:
+def render_body(source: Path, html_rel: str = "", is_gbedg: bool = False) -> str:
     raw = source.read_text(encoding="utf-8")
     if source.suffix == ".txt":
         escaped = raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         return f'<pre class="fixture">{escaped}</pre>'
-    raw = rewrite_md_links(raw, is_gbedg)
+    raw = rewrite_md_links(raw, source, html_rel, is_gbedg)
     MD.reset()
     return MD.convert(raw)
 
@@ -129,6 +182,21 @@ def nav_block(root: str, current: str = "") -> str:
     soft = "\n".join(
         _nav_link(root, html, label, current)
         for label, src, html in LEARN_AND_CRATE
+        if src.exists()
+    )
+    qemu = "\n".join(
+        _nav_link(root, html, label, current)
+        for label, src, html in QEMU_PAGES
+        if src.exists()
+    )
+    llvm = "\n".join(
+        _nav_link(root, html, label, current)
+        for label, src, html in LLVM_PAGES
+        if src.exists()
+    )
+    sdk = "\n".join(
+        _nav_link(root, html, label, current)
+        for label, src, html in SDK_PAGES
         if src.exists()
     )
     gbedg = "\n".join(
@@ -148,6 +216,27 @@ def nav_block(root: str, current: str = "") -> str:
       <ul>
 {pandocs}
       </ul>"""
+    qemu_section = ""
+    if any(src.exists() for _, src, _ in QEMU_PAGES):
+        qemu_section = f"""
+      <p class="nav-section">QEMU SM83</p>
+      <ul>
+{qemu}
+      </ul>"""
+    llvm_section = ""
+    if any(src.exists() for _, src, _ in LLVM_PAGES):
+        llvm_section = f"""
+      <p class="nav-section">LLVM SM83</p>
+      <ul>
+{llvm}
+      </ul>"""
+    sdk_section = ""
+    if any(src.exists() for _, src, _ in SDK_PAGES):
+        sdk_section = f"""
+      <p class="nav-section">GBC SDK</p>
+      <ul>
+{sdk}
+      </ul>"""
     lab = "\n".join(
         [
             _nav_link(root, "softgbc/environment.html", "Environment", current),
@@ -162,7 +251,7 @@ def nav_block(root: str, current: str = "") -> str:
       <p class="nav-section">SoftGBC</p>
       <ul>
 {soft}
-      </ul>
+      </ul>{llvm_section}{qemu_section}{sdk_section}
       <p class="nav-section">GBEDG <span class="muted">(MIT)</span></p>
       <ul>
 {gbedg}
@@ -519,7 +608,28 @@ def main() -> None:
         if not src.exists():
             print(f"skip {src}")
             continue
-        write_page(html_rel, label, render_body(src), f"SoftGBC / {label}")
+        write_page(html_rel, label, render_body(src, html_rel), f"SoftGBC / {label}")
+        print(f"wrote {html_rel}")
+
+    for label, src, html_rel in QEMU_PAGES:
+        if not src.exists():
+            print(f"skip {src}")
+            continue
+        write_page(html_rel, label, render_body(src, html_rel), f"QEMU SM83 / {label}")
+        print(f"wrote {html_rel}")
+
+    for label, src, html_rel in LLVM_PAGES:
+        if not src.exists():
+            print(f"skip {src}")
+            continue
+        write_page(html_rel, label, render_body(src, html_rel), f"LLVM SM83 / {label}")
+        print(f"wrote {html_rel}")
+
+    for label, src, html_rel in SDK_PAGES:
+        if not src.exists():
+            print(f"skip {src}")
+            continue
+        write_page(html_rel, label, render_body(src, html_rel), f"GBC SDK / {label}")
         print(f"wrote {html_rel}")
 
     section_for = {
@@ -538,7 +648,7 @@ def main() -> None:
         if not src.exists():
             print(f"skip {src}")
             continue
-        body = render_body(src, is_gbedg=True)
+        body = render_body(src, html_rel, is_gbedg=True)
         section = section_for.get(html_rel, "")
         if section:
             body = fix_gbedg_images(body, section)
@@ -548,7 +658,7 @@ def main() -> None:
     for label, src, html_rel in PANDOCS_PAGES:
         if not src.exists():
             continue
-        write_page(html_rel, f"Pan Docs — {label}", render_body(src), f"Pan Docs / {label}")
+        write_page(html_rel, f"Pan Docs — {label}", render_body(src, html_rel), f"Pan Docs / {label}")
         print(f"wrote {html_rel}")
 
     copy_gbedg_images()

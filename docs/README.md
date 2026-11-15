@@ -6,6 +6,9 @@ Hosts the **static HTML site** and **reference PDFs**. SoftGBC work is **checkli
 |---|---|
 | Item pattern | What → Structure → Min test → Done when — in **softgbc-hands-off** Cursor skill |
 | SoftGBC checklists | [`../SoftGBC/README.md`](../SoftGBC/README.md), [`dmg-ppu`](../SoftGBC/dmg-ppu/README.md), [`interrupt`](../SoftGBC/interrupt/README.md), … |
+| LLVM SM83 (Chunks C–D) | [`llvm/README.md`](llvm/README.md) compiler + ABI + toolchain checklists |
+| QEMU SM83 (Chunk E) | [`qemu/README.md`](qemu/README.md) approach + phase checklists |
+| GBC game SDK | [`sdk/README.md`](sdk/README.md) runtime + assets + agent workflow checklists |
 | [`datasheets/`](datasheets/) | PDFs (`gbctr`, `TCAGBD`, Sharp 1996) |
 | [`REFERENCES.md`](REFERENCES.md) | How SoftGBC uses each source |
 | [`vendor/`](vendor/) | GBEDG, Pan Docs |

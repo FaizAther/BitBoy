@@ -696,6 +696,7 @@ mod tests {
     #[test]
     fn tick_t_cycles_can_set_vblank_if_bit() {
         let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF40, 0x80)); // LCD on — LY only advances while enabled
         assert_eq!(bus.read8(0xFF0F).unwrap() & 0x01, 0x00);
 
         // 144 scanlines × 456 T → LY becomes 144 → VBlank request (IF bit 0)
@@ -708,6 +709,7 @@ mod tests {
     #[test]
     fn tick_before_vblank_does_not_require_vblank_if() {
         let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF40, 0x80));
         // Still on visible lines (LY 0..143) after 143 full scanlines
         bus.tick_t_cycles(143 * 456);
         assert_eq!(bus.ppu.ly, 143);
@@ -734,6 +736,7 @@ mod tests {
         use peripherals::IoDevice;
 
         let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF40, 0x80));
         bus.ppu.write(0xFF41, 0x40); // LYC STAT enable
         bus.ppu.write(0xFF45, 1); // LYC = 1
         bus.tick_t_cycles(456); // LY 0 → 1

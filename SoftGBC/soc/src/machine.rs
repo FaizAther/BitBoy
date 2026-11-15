@@ -137,6 +137,7 @@ mod tests {
         for a in 0x0100..0x0200 {
             assert!(gb.bus.poke(a, 0x00));
         }
+        assert!(gb.write8(0xFF40, 0x80)); // LCD on — LY frozen while off
         assert_eq!(gb.read8(0xFF44), Some(0));
 
         // 1 NOP = 1 M = 4 T; one scanline = 456 T → 114 NOPs.
@@ -157,6 +158,7 @@ mod tests {
         gb.cpu.sp = 0xFFFE;
         gb.cpu.ime = true;
         assert!(gb.write8(0xFFFF, 0x01)); // IE: VBlank
+        assert!(gb.write8(0xFF40, 0x80)); // LCD on
 
         // Real PPU edge: LY becomes 144 → IF bit 0 (already merged in bus.tick).
         gb.bus.tick_t_cycles(144 * 456);

@@ -2,14 +2,15 @@
 //!
 //! ```text
 //! cargo run -p softgbc-host --bin softgbc-view -- --demo --http 8765
-//! # open http://127.0.0.1:8765/
+//! cargo run -p softgbc-host --bin softgbc-view -- --rom game.gb --window
+//! # Keys: arrows = d-pad, X=A, Z=B, Enter=Start, Backspace=Select, Esc=quit
 //! ```
 
 use dmg_ppu::{SCREEN_H, SCREEN_W};
 use softgbc_host::{
-    forward_to_remote, run_loop, DemoPpuController, FanOutMode, FanOutSink, FrameSink, HostWindow,
-    HostWindowConfig, HttpPreviewServer, HubSink, RemoteEgress, SoftGbcController,
-    WebRtcEgressStub, WindowPalette,
+    forward_to_remote, run_loop, run_play_loop, DemoPpuController, FanOutMode, FanOutSink,
+    FrameSink, HostWindow, HostWindowConfig, HttpPreviewServer, HubSink, NullInput, RemoteEgress,
+    SharedKeyboardInput, SoftGbcController, WebRtcEgressStub, WindowPalette,
 };
 use std::env;
 use std::thread;
@@ -22,9 +23,11 @@ fn usage() -> ! {
   softgbc-view --rom <path.gb> [--http PORT] [--window] [--broadcast] [--frames N]
 
   --http PORT   serve browser preview at http://127.0.0.1:PORT/ (0 = ephemeral)
-  --window      also open a local minifb window (needs DISPLAY)
+  --window      local minifb window (needs DISPLAY); ROM mode polls keyboard
   --broadcast   also push to channel + WebRTC stub thread
-  --frames N    stop after N frames (default: forever for window/http)"
+  --frames N    stop after N frames (default: forever for window/http)
+
+  ROM keys: Arrows=d-pad  X=A  Z=B  Enter=Start  Backspace=Select  Esc=quit"
     );
     std::process::exit(2);
 }
@@ -83,24 +86,14 @@ fn main() {
         usage();
     }
     if http_port.is_none() && !window && !broadcast {
-        // Default: HTTP preview on 8765 so remote sessions can open a page.
         http_port = Some(8765);
     }
 
+    let (key_slot, mut keyboard) = SharedKeyboardInput::pair();
     let mut sinks: Vec<Box<dyn FrameSink>> = Vec::new();
     let mut remote_join = None;
 
-    if let Some(port) = http_port {
-        let srv = HttpPreviewServer::spawn(port).unwrap_or_else(|e| {
-            eprintln!("http preview: {e}");
-            std::process::exit(1);
-        });
-        eprintln!("SoftGBC HTTP preview: {}", srv.url());
-        sinks.push(Box::new(HubSink::new(srv.hub())));
-        // Keep server thread alive for the process lifetime.
-        std::mem::forget(srv);
-    }
-
+    // Window first so FanOut primary-stop / Esc quit works, and keys publish early.
     if window {
         let win = HostWindow::open(
             HostWindowConfig {
@@ -119,7 +112,17 @@ fn main() {
             eprintln!("window: {e}");
             std::process::exit(1);
         });
-        sinks.push(Box::new(win));
+        sinks.push(Box::new(win.with_key_sink(key_slot)));
+    }
+
+    if let Some(port) = http_port {
+        let srv = HttpPreviewServer::spawn(port).unwrap_or_else(|e| {
+            eprintln!("http preview: {e}");
+            std::process::exit(1);
+        });
+        eprintln!("SoftGBC HTTP preview: {}", srv.url());
+        sinks.push(Box::new(HubSink::new(srv.hub())));
+        std::mem::forget(srv);
     }
 
     if broadcast {
@@ -145,11 +148,9 @@ fn main() {
         } else {
             FanOutMode::ContinueWhileAny
         };
-        // Put window first if present so primary-stop works.
         Box::new(FanOutSink::new(sinks, mode))
     };
 
-    // Give HTTP a moment to bind before we hammer frames (browser can connect).
     thread::sleep(Duration::from_millis(100));
 
     let max_frames = frames.or(if window || http_port.is_some() {
@@ -158,18 +159,23 @@ fn main() {
         Some(60)
     });
 
-    let mut run = |c: &mut dyn softgbc_host::PpuController| run_loop(c, sink.as_mut(), max_frames);
-
     let result = if demo {
         let mut c = DemoPpuController::solid_stripe();
-        run(&mut c)
+        run_loop(&mut c, sink.as_mut(), max_frames)
     } else {
         let path = rom.unwrap();
         let mut c = SoftGbcController::from_rom(&path).unwrap_or_else(|e| {
             eprintln!("load ROM: {e}");
             std::process::exit(1);
         });
-        run(&mut c)
+        // With a window, keyboard drives joypad; headless/HTTP-only uses NullInput.
+        if window {
+            eprintln!("play: arrows / X=A Z=B Enter=Start Backspace=Select Esc=quit");
+            run_play_loop(&mut c, &mut keyboard, sink.as_mut(), max_frames)
+        } else {
+            let mut input = NullInput;
+            run_play_loop(&mut c, &mut input, sink.as_mut(), max_frames)
+        }
     };
 
     if let Err(e) = result {

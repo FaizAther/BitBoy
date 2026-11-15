@@ -39,11 +39,11 @@ This file is the **whole SoftGBC roadmap** — sorted by effort, not by “compl
 | Bus / memory | **Done** — `DmgBus`: ROM/WRAM/HRAM/VRAM/OAM/IO/`IE` + **Timer** + **Serial** |
 | SoC machine | **Done** — `SoftGbc` (`cpu` + `bus` + `step`/`run`); Blargg is `soc/tests/` only |
 | `sm83-iss` | **Done for ISA** — full base + `CB`, `EI`/`DI`/`HALT`, IRQ vectoring |
-| `peripherals` | Timer + serial (capture); joypad/dma stubs |
+| `peripherals` | Timer + serial + joypad + **timed OAM DMA** |
 | Blargg `cpu_instrs` (individuals) | **11/11 Passed** via `cargo test -p soc` |
-| PPU / MBC / APU | **PPU wired** (LY/BG/window/sprites unit); joypad/window host + MBC/APU later |
+| PPU / MBC / APU | **PPU + host play loop** wired; MBC/APU mute still open |
 
-**Immediate next step:** joypad / host window blit, or `dmg-acid2` / visual golden.
+**Immediate next step:** APU mute stub, then try a 32 KiB ROM with `--rom --window`.
 
 **How to repro Blargg:**
 
@@ -464,16 +464,16 @@ Detail: [`cartridge/README.md`](cartridge/README.md).
 
 Detail: [`Joypad.README.md`](peripherals/src/Joypad.README.md).
 
-- [ ] **`FF00` from host keys**  
+- [x] **`FF00` from host keys**  
   **What:** active-low nibble for selected group.  
   **Min test:** press Down → correct bit low.  
-  **Done when:** bus read matches host.
+  **Done when:** bus read matches host (`InputSource` / `ManualInput`).
 
-- [ ] **Window: VBlank → blit → poll**  
+- [x] **Window: VBlank → blit → poll**  
   **What:** host UI; SoftGbc stays headless-capable.  
-  **Done when:** you see a frame and can press keys.
+  **Done when:** you see a frame and can press keys (`run_play_loop` + `softgbc-view --rom --window`).
 
-- [ ] **Keep headless CI**  
+- [x] **Keep headless CI**  
   **Done when:** Blargg still runs without a window.
 
 ---

@@ -6,9 +6,10 @@
 
 ## Status *(2026-11)*
 
-**P1 select + pressed state wired.** Host backends live in `softgbc-host` as
-`InputSource` (manual / channel / web-stub / bluetooth-stub / fan-in) — same idea
-as `FrameSink` for video. Bus routes `FF00` → `Joypad`. IRQ + real keyboard map still open.
+**P1 select + pressed state wired.** Host play loop: `run_play_loop` polls
+`InputSource` → `Joypad::set_pressed` each frame, then SoftGbc advances and blits.
+Window keyboard via `SharedKeyboardInput` (arrows / X=A / Z=B / Enter / Backspace).
+IRQ still open.
 
 ```text
 FF00 write: choose group
@@ -120,9 +121,29 @@ bus.read(FF00) matches pressed keys
 
 ---
 
+- [x] **Host play loop (blit + poll)**
+
+  **What:** each frame: poll keys → joypad → SoftGbc frame → present.  
+  **Structure:**
+```text
+run_play_loop(SoftGbcController, InputSource, FrameSink):
+  buttons = input.poll()
+  joypad.set_pressed(buttons)
+  advance_frame()   # CPU + DMA ticks + render
+  sink.present(shade_frame)
+```
+  **Min test:**
+```text
+ManualInput(A) + NullSink → 2 frames; joypad.pressed has A
+keys_to_buttons(Left|A) → Buttons LEFT|A
+```
+  **Done when:** `play_loop_applies_input_then_presents` + `softgbc-view --rom` path green.
+
+---
+
 - [ ] **Manual: move in a simple ROM**
 
-  **What:** windowed host + SoftGbc; character moves.  
-  **Structure:** host maps keys → `set_from_host` each frame.  
+  **What:** windowed host + SoftGbc; character moves on a real cart.  
+  **Structure:** `softgbc-view --rom game.gb --window` (needs APU mute / MBC as required).  
   **Min test:** play homebrew / boot screen by hand.  
   **Done when:** input feels correct in-game.

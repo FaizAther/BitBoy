@@ -5,21 +5,18 @@ Host **display / remote video** for SoftGBC. The PPU never depends on this crate
 ## Architecture
 
 ```text
-PpuController (SoftGbc / Demo)     ← drive emulation + expose ShadeFrame
+SoftGbcController / Demo
+        │
+   run_play_loop (ROM) / run_loop (demo)
+     InputSource → Joypad          (keyboard / manual / web stub)
+     advance_frame → ShadeFrame
         │
         ▼
-   run_driver / run_loop
-        │
-        ▼
-   FrameSink (pluggable environment)
-     ├─ HostWindow     local GUI on this server (DISPLAY) or SSH -X
-     ├─ ChannelSink    owned frames → another thread / process
-     ├─ FanOutSink     local **and** remote at once
-     └─ NullSink       tests
-            │
-            ▼
-   RemoteEgress        WebRTC / webapp / custom
-     └─ WebRtcEgressStub (placeholder; swap for real webrtc)
+   FrameSink
+     ├─ HostWindow (+ SharedKeyboardInput)
+     ├─ HubSink / HTTP preview
+     ├─ ChannelSink → RemoteEgress
+     └─ NullSink
 ```
 
 | Layer | Crate | Knows about windows? |
@@ -33,14 +30,15 @@ PpuController (SoftGbc / Demo)     ← drive emulation + expose ShadeFrame
 
 ```bash
 cd SoftGBC
-# Demo stripes on $DISPLAY (works with `ssh -X` if X11 forwarding is on):
-cargo run -p softgbc-host --bin softgbc-view -- --demo
+# Demo stripes on $DISPLAY:
+cargo run -p softgbc-host --bin softgbc-view -- --demo --window
 
-# Local window + broadcast channel (stub WebRTC consumer drains the channel):
-cargo run -p softgbc-host --bin softgbc-view -- --demo --broadcast --frames 120
+# Play a ROM (blit + keyboard → joypad):
+cargo run -p softgbc-host --bin softgbc-view -- --rom path/to/game.gb --window
+# Keys: arrows  X=A  Z=B  Enter=Start  Backspace=Select  Esc=quit
 
-# Headless broadcast only (e.g. CI / future web bridge):
-cargo run -p softgbc-host --bin softgbc-view -- --demo --no-window --broadcast --frames 30
+# HTTP preview (default port 8765) without a local window:
+cargo run -p softgbc-host --bin softgbc-view -- --rom path/to/game.gb --http 8765 --frames 120
 ```
 
 ## Adding WebRTC / a webapp

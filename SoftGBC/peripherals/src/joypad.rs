@@ -41,6 +41,19 @@ impl Buttons {
     }
 }
 
+impl std::ops::BitOr for Buttons {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for Buttons {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = self.union(rhs);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Joypad {
     /// Select bits 4–5 as last written (other bits rebuilt on read / set).

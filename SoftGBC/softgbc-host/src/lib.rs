@@ -31,7 +31,7 @@ mod window;
 
 pub use controller::{DemoPpuController, PpuController, SoftGbcController};
 pub use driver::{run_driver, DriverConfig, DriverHandles};
-pub use http_preview::{encode_frame_png, FrameHub, HttpPreviewServer, HubSink};
+pub use http_preview::{encode_frame_png, encode_frame_rgb, FrameHub, HttpPreviewServer, HubSink};
 pub use input::{
     apply_input, BluetoothInputStub, ChannelInput, FanInInput, InputSource, ManualInput,
     NullInput, WebInputStub,

@@ -31,6 +31,11 @@ impl SoftGbcController {
         Ok(Self::new(SoftGbc::from_rom_file(path)?))
     }
 
+    /// Load a raw cartridge image already in memory (skip boot).
+    pub fn from_rom_bytes(data: &[u8]) -> Self {
+        Self::new(SoftGbc::from_rom_bytes(data))
+    }
+
     /// Poll an [`crate::InputSource`] into the machine joypad (each frame / tick).
     pub fn apply_input(&mut self, source: &mut dyn crate::InputSource) {
         crate::apply_input(&mut self.gb.bus.joypad, source);
@@ -140,5 +145,34 @@ mod tests {
         let mut sink = NullSink::default();
         run_loop(&mut demo, &mut sink, Some(3)).unwrap();
         assert_eq!(sink.presents, 3);
+    }
+
+    #[test]
+    fn from_rom_bytes_advances_one_frame() {
+        let mut raw = vec![0u8; 0x200];
+        raw[0x100] = 0x00; // NOP
+        let mut ctl = SoftGbcController::from_rom_bytes(&raw);
+        ctl.advance_frame();
+        let f = ctl.frame();
+        assert_eq!(f.width, SCREEN_W);
+        assert_eq!(f.height, SCREEN_H);
+        assert_eq!(f.shades.len(), FRAME_PIXELS);
+    }
+
+    #[test]
+    fn tetris_dx_rom_loads_when_present() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cartridge/roms")
+            .join("Tetris DX (World) (SGB Enhanced) (GB Compatible).gbc");
+        if !path.is_file() {
+            return;
+        }
+        let data = std::fs::read(&path).expect("read tetris");
+        let ctl = SoftGbcController::from_rom_bytes(&data);
+        assert_eq!(ctl.gb.cpu.pc, 0x0100);
+        assert!(
+            ctl.gb.bus.cart.is_some(),
+            "Tetris DX is MBC1 and needs cart banking"
+        );
     }
 }

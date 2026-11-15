@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use apu::Apu;
+use cartridge::Mbc1;
 use dmg_ppu::DmgPpu;
 use peripherals::dma::OAM_DMA_LEN;
 use peripherals::{Dma, IoDevice, Joypad, Serial, Timer};
@@ -20,6 +22,7 @@ pub trait Bus {
 /// - `FF00` → [`Joypad`]
 /// - `FF01`–`FF02` → [`Serial`]
 /// - `FF04`–`FF07` → [`Timer`]
+/// - `FF10`–`FF3F` → [`Apu`] (mute stub)
 /// - `FF40`–`FF45`, `FF47`–`FF4B` → [`DmgPpu`]
 /// - `FF46` → [`Dma`] (timed OAM copy; 1 byte / M-cycle)
 ///
@@ -32,6 +35,8 @@ pub struct MemoryBus<
     const IE_SIZE: usize,
 > {
     rom: Rom<ROM_SIZE>,
+    /// When set, `$0000`–`$7FFF` / `$A000`–`$BFFF` go through MBC1 (banked carts).
+    pub cart: Option<Mbc1>,
     wram: Ram<WRAM_SIZE>,
     hram: Ram<HRAM_SIZE>,
     /// VRAM `$8000`–`$9FFF` (raw buffer until PPU owns rendering).
@@ -45,8 +50,10 @@ pub struct MemoryBus<
     pub ppu: DmgPpu,
     /// Joypad — owns `P1` / `FF00` (host feeds pressed keys).
     pub joypad: Joypad,
-    /// OAM DMA — owns `FF46`; write triggers instant 160-byte copy → OAM.
+    /// OAM DMA — owns `FF46`; timed 160-byte copy → OAM.
     pub dma: Dma,
+    /// APU mute stub — owns `FF10`–`FF3F` (silence).
+    pub apu: Apu,
     /// DMG timer — owns DIV/TIMA/TMA/TAC and internal 16-bit DIV.
     pub timer: Timer,
     /// Serial link — owns SB/SC and captured output text.
@@ -70,6 +77,7 @@ impl<
     pub fn new() -> Self {
         Self {
             rom: Rom::new(),
+            cart: None,
             wram: Ram::new(),
             hram: Ram::new(),
             vram: [0x00; 0x2000],
@@ -79,6 +87,7 @@ impl<
             ppu: DmgPpu::new(),
             joypad: Joypad::new(),
             dma: Dma::new(),
+            apu: Apu::new(),
             timer: Timer::new(),
             serial: Serial::new(),
             entry: 0x0100,
@@ -99,6 +108,9 @@ impl<
     fn read8_raw(&self, addr: u16) -> Option<u8> {
         match addr {
             0x0000..=0x7FFF => {
+                if let Some(cart) = &self.cart {
+                    return Some(cart.read(addr));
+                }
                 let local = addr as usize;
                 if local < ROM_SIZE {
                     self.rom.read(addr)
@@ -106,12 +118,16 @@ impl<
                     Some(0xFF)
                 }
             }
+            0xA000..=0xBFFF if self.cart.is_some() => {
+                Some(self.cart.as_ref().unwrap().read(addr))
+            }
             0x8000..=0x9FFF => Some(self.vram[(addr - 0x8000) as usize]),
             0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
             0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
             a if Joypad::handles(a) => Some(self.joypad.read(a)),
             a if Serial::handles(a) => Some(self.serial.read(a)),
             a if Timer::handles(a) => Some(self.timer.read(a)),
+            a if Apu::handles(a) => Some(self.apu.read(a)),
             a if Dma::handles(a) => Some(self.dma.read(a)),
             a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
             0xFF00..=0xFF7F => Self::io_index(addr).and_then(|i| self.io.read(i)),
@@ -155,6 +171,7 @@ impl<
     /// Also advances OAM DMA by `t_cycles / 4` M-cycles.
     pub fn tick_t_cycles(&mut self, t_cycles: u32) {
         self.tick_oam_dma(t_cycles / 4);
+        self.apu.tick(t_cycles);
         let irq = self.timer.tick(t_cycles).merge(self.ppu.tick(t_cycles));
         if irq.bits != 0 {
             if let Some(i) = Self::io_index(0xFF0F) {
@@ -207,7 +224,8 @@ impl<
 
     /// Load a raw cartridge image (`.gb` / `.gbc`).
     ///
-    /// Only the first `ROM_SIZE` bytes are mapped (no MBC banking yet).
+    /// MBC1 carts (`$0147` = `$01`/`$02`/`$03`) keep the full image and bank via
+    /// [`Self::cart`]. Smaller / ROM-only images map into the flat 32 KiB window.
     /// Entry defaults to `0x0100` (skip boot).
     pub fn from_rom_file(path: impl AsRef<Path>) -> Result<Self, HexLoadError> {
         let data = std::fs::read(path)?;
@@ -217,8 +235,15 @@ impl<
     pub fn from_rom_bytes(data: &[u8]) -> Self {
         let mut bus = Self::new();
         bus.entry = 0x0100;
-        let n = data.len().min(ROM_SIZE);
-        bus.rom.load(0, &data[..n]);
+        if cartridge::needs_mbc1(data) || data.len() > ROM_SIZE {
+            bus.cart = Some(Mbc1::new(data.to_vec()));
+            // Also mirror first 32 KiB into flat ROM for tools that peek `rom`.
+            let n = data.len().min(ROM_SIZE);
+            bus.rom.load(0, &data[..n]);
+        } else {
+            let n = data.len().min(ROM_SIZE);
+            bus.rom.load(0, &data[..n]);
+        }
         bus
     }
 
@@ -358,7 +383,16 @@ impl<
             return true;
         }
         match addr {
-            0x0000..=0x7FFF => true, // ROM: ignore write, still "ok"
+            0x0000..=0x7FFF => {
+                if let Some(cart) = &mut self.cart {
+                    cart.write(addr, data);
+                }
+                true // ROM/MBC: ignore or latch banking
+            }
+            0xA000..=0xBFFF if self.cart.is_some() => {
+                self.cart.as_mut().unwrap().write(addr, data);
+                true
+            }
             0x8000..=0x9FFF => {
                 self.vram[(addr - 0x8000) as usize] = data;
                 true
@@ -384,6 +418,10 @@ impl<
             }
             a if Timer::handles(a) => {
                 self.timer.write(a, data);
+                true
+            }
+            a if Apu::handles(a) => {
+                self.apu.write(a, data);
                 true
             }
             a if Dma::handles(a) => {
@@ -528,6 +566,18 @@ mod tests {
         assert_eq!(bus.read8(0xFF00).unwrap() & 0x01, 0x00);
         assert_eq!(bus.io.read(0x00), Some(0x00));
         assert!(Joypad::handles(0xFF00));
+    }
+
+    #[test]
+    fn apu_nr_regs_owned_by_apu_not_flat_io() {
+        let mut bus: DmgBus = MemoryBus::new();
+        assert!(bus.write8(0xFF26, 0x80));
+        assert_eq!(bus.read8(0xFF26).unwrap() & 0x80, 0x80);
+        assert!(Apu::handles(0xFF26));
+        assert_eq!(bus.io.read(0x26), Some(0x00));
+        assert!(bus.write8(0xFF30, 0xAB));
+        assert_eq!(bus.read8(0xFF30), Some(0xAB));
+        assert_eq!(bus.apu.mix(), (0, 0));
     }
 
     /// Timed OAM DMA: WRAM $C000 → OAM $FE00 over 160 M-cycles.

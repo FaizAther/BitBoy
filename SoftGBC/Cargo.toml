@@ -5,6 +5,7 @@ members = [
     "cartridge",
     "sm83-iss",
     "dmg-ppu",
+    "apu",
     "softgbc-core",
     "peripherals",
     "softgbc-utils",

@@ -7,3 +7,5 @@ license.workspace = true
 [dependencies]
 peripherals = { path = "../peripherals" }
 dmg-ppu = { path = "../dmg-ppu" }
+apu = { path = "../apu" }
+cartridge = { path = "../cartridge" }

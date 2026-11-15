@@ -96,8 +96,8 @@ impl FrameSink for HubSink {
     }
 }
 
-/// Encode shades as RGB8 PNG bytes.
-pub fn encode_frame_png(frame: &OwnedShadeFrame) -> Result<Vec<u8>, PresentError> {
+/// Expand shades to packed RGB8 (3 bytes/pixel) for canvas blit / raw HTTP.
+pub fn encode_frame_rgb(frame: &OwnedShadeFrame) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(frame.shades.len() * 3);
     for &s in &frame.shades {
         let argb = shade_to_argb(s, &GREY_ARGB);
@@ -105,6 +105,12 @@ pub fn encode_frame_png(frame: &OwnedShadeFrame) -> Result<Vec<u8>, PresentError
         rgb.push(((argb >> 8) & 0xFF) as u8);
         rgb.push((argb & 0xFF) as u8);
     }
+    rgb
+}
+
+/// Encode shades as RGB8 PNG bytes.
+pub fn encode_frame_png(frame: &OwnedShadeFrame) -> Result<Vec<u8>, PresentError> {
+    let rgb = encode_frame_rgb(frame);
     let mut out = Cursor::new(Vec::new());
     {
         let mut enc = Encoder::new(&mut out, frame.width as u32, frame.height as u32);
@@ -184,6 +190,19 @@ fn serve_loop(server: Server, hub: FrameHub) {
 mod tests {
     use super::*;
     use softgbc_utils::ShadeFrame;
+
+    #[test]
+    fn encode_frame_rgb_is_3_bytes_per_pixel() {
+        let frame = OwnedShadeFrame {
+            width: 160,
+            height: 144,
+            shades: vec![0u8; 160 * 144],
+        };
+        let rgb = encode_frame_rgb(&frame);
+        assert_eq!(rgb.len(), 160 * 144 * 3);
+        // shade 0 → white in GREY_ARGB
+        assert_eq!(&rgb[0..3], &[0xFF, 0xFF, 0xFF]);
+    }
 
     #[test]
     fn encode_png_roundtrip_size() {

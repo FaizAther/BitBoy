@@ -353,6 +353,49 @@ def build_environment_page() -> None:
 <strong>joypad in</strong>. The PPU and Joypad MMIO stay host-agnostic —
 pluggable backends live in <code>softgbc-host</code>.</p>
 
+<section class="play-panel" id="play-panel">
+  <div class="play-layout">
+    <div class="play-main">
+      <h2>Play a ROM</h2>
+      <p>Load a cart from <code>SoftGBC/cartridge/roms/</code> (Tetris DX is there) or upload
+      a <code>.gb</code> / <code>.gbc</code>. Requires <code>./serve.sh</code> (spawns
+      <code>softgbc-play</code>). MBC1 carts work; MBC3 (e.g. Pokémon Crystal) later.</p>
+      <p class="play-share">Session <code id="play-session">…</code> —
+      share <a id="play-session-link" href="#">this link</a> to watch the same play instance.</p>
+      <p class="play-share play-share--hint" id="play-reach-hint">
+        Watching from a Mac: Cursor <strong>Ports</strong> → forward <code>8000</code>
+        (then Mac <code>localhost:8000</code> works), or open the LAN link filled in below.
+      </p>
+      <div class="play-controls">
+        <label class="play-field">
+          <span>Cartridge</span>
+          <select id="play-rom-select"></select>
+        </label>
+        <label class="play-field">
+          <span>Upload</span>
+          <input id="play-file" type="file" accept=".gb,.gbc,.bin,application/octet-stream" />
+        </label>
+        <div class="lab-actions">
+          <button type="button" class="lab-play" id="play-start">Play</button>
+          <button type="button" class="lab-play lab-play--stop" id="play-stop">Stop</button>
+        </div>
+      </div>
+      <div class="play-screen">
+        <div class="lab-screen-cap">LCD <span id="play-key-lock" class="play-key-lock" hidden></span></div>
+        <canvas id="play-lcd" class="lab-lcd lab-lcd--empty play-lcd" width="160" height="144" tabindex="0" role="img" aria-label="Game Boy LCD"></canvas>
+      </div>
+      <p class="lab-meta" id="play-status">…</p>
+    </div>
+    <aside class="play-live" aria-label="Live games">
+      <h3>Live games</h3>
+      <p class="play-live-hint">Click a session to watch.</p>
+      <ul id="play-live-list" class="play-live-list">
+        <li class="play-live-empty">No live sessions yet.</li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
 <h2>Video (FrameSink)</h2>
 <pre><code>PpuController → run_loop → FrameSink(s)
   ├─ HostWindow       local minifb / X11
@@ -373,8 +416,8 @@ pluggable backends live in <code>softgbc-host</code>.</p>
 
 <h2>Docs server (<code>./serve.sh</code>)</h2>
 <ul>
-  <li>Builds static HTML + <code>softgbc-lab</code></li>
-  <li>Serves site with <code>/api/visual-tests</code> (Play → PNG + expected CRC)</li>
+  <li>Builds static HTML + <code>softgbc-lab</code> + <code>softgbc-play</code></li>
+  <li>Serves site with <code>/api/visual-tests</code> and <code>/api/play/*</code></li>
   <li>Fixture text under <code>/api/fixtures/…</code></li>
 </ul>
 <p><a href="visual-tests.html"><strong>Open visual tests →</strong></a>
@@ -387,13 +430,14 @@ pluggable backends live in <code>softgbc-host</code>.</p>
 
 cargo run -p softgbc-host --bin softgbc-view -- --demo --http 8765
 cargo run -p softgbc-host --bin softgbc-lab -- list
-cargo run -p softgbc-host --bin softgbc-lab -- run solid_bg</code></pre>
+cargo run -p softgbc-host --bin softgbc-play -- --port 8766</code></pre>
 """
     write_page(
         "softgbc/environment.html",
         "Environment",
         body,
         "SoftGBC / Environment",
+        extra_scripts='  <script src="../assets/play.js"></script>\n',
     )
     print("wrote softgbc/environment.html")
 
@@ -466,7 +510,7 @@ def main() -> None:
     build_visual_lab()
     build_attribution()
     build_datasheets_index()
-    for name in ("visual_lab.js", "live_reload.js"):
+    for name in ("visual_lab.js", "live_reload.js", "play.js"):
         js_src = DOCS / "assets" / name
         if js_src.exists():
             shutil.copy2(js_src, assets / name)

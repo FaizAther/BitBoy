@@ -28,11 +28,14 @@ fi
 .venv/bin/python build_site.py
 
 LAB_BIN="../SoftGBC/target/debug/softgbc-lab"
-echo "Building softgbc-lab…"
+# Release play binary — debug is ~30fps and feels choppy in the browser.
+PLAY_BIN="../SoftGBC/target/release/softgbc-play"
+echo "Building softgbc-lab (debug) + softgbc-play (release)…"
 cargo build -q -p softgbc-host --bin softgbc-lab --manifest-path ../SoftGBC/Cargo.toml
+cargo build -q -p softgbc-host --bin softgbc-play --release --manifest-path ../SoftGBC/Cargo.toml
 
 if [[ "$BUILD_ONLY" -eq 1 ]]; then
-  echo "Built docs/site/ + softgbc-lab (not serving)"
+  echo "Built docs/site/ + softgbc-lab + softgbc-play (not serving)"
   exit 0
 fi
 
@@ -41,7 +44,12 @@ if [[ "$WATCH" -eq 0 ]]; then
   WATCH_FLAG=(--no-watch)
 fi
 
-echo "Docs + lab:"
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+echo "Docs + lab + play:"
 echo "  http://localhost:${PORT}/softgbc/environment.html"
 echo "  http://localhost:${PORT}/softgbc/visual-tests.html"
-exec .venv/bin/python visual_lab_server.py --port "$PORT" --root site --lab "$LAB_BIN" "${WATCH_FLAG[@]}"
+if [[ -n "${LAN_IP}" ]]; then
+  echo "  From Mac/LAN (not Mac-localhost): http://${LAN_IP}:${PORT}/softgbc/environment.html"
+fi
+echo "  Or forward port ${PORT} in Cursor Ports, then use Mac http://localhost:${PORT}/…"
+exec .venv/bin/python visual_lab_server.py --port "$PORT" --bind 0.0.0.0 --root site --lab "$LAB_BIN" --play "$PLAY_BIN" "${WATCH_FLAG[@]}"

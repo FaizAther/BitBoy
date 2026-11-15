@@ -13,6 +13,10 @@ path = "src/bin/softgbc-view.rs"
 name = "softgbc-lab"
 path = "src/bin/softgbc-lab.rs"
 
+[[bin]]
+name = "softgbc-play"
+path = "src/bin/softgbc-play.rs"
+
 [dependencies]
 softgbc-utils = { path = "../softgbc-utils" }
 softgbc-core = { path = "../softgbc-core" }

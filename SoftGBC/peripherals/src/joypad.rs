@@ -24,6 +24,11 @@ impl Buttons {
         self.0
     }
 
+    /// Rebuild from the host bitset (same layout as [`Self::bits`]).
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
@@ -185,5 +190,16 @@ mod tests {
     fn neither_group_selected_reads_f() {
         let pad = Joypad::new();
         assert_eq!(pad.read(0xFF00) & 0x3F, 0x3F); // select 0x30 + nibble F
+    }
+
+    #[test]
+    fn from_bits_round_trips_host_mask() {
+        let mask = Buttons::A.bits() | Buttons::START.bits() | Buttons::RIGHT.bits();
+        let b = Buttons::from_bits(mask);
+        assert_eq!(b.bits(), mask);
+        assert!(b.contains(Buttons::A));
+        assert!(b.contains(Buttons::START));
+        assert!(b.contains(Buttons::RIGHT));
+        assert!(!b.contains(Buttons::B));
     }
 }

@@ -57,6 +57,17 @@ impl SoftGbc {
         Ok(gb)
     }
 
+    /// Load a raw `.gb` / `.gbc` image already in memory (skip boot → `$0100`).
+    pub fn from_rom_bytes(data: &[u8]) -> Self {
+        let bus = DmgBus::from_rom_bytes(data);
+        let mut gb = Self {
+            cpu: Cpu::new(),
+            bus,
+        };
+        gb.reset(&MachineConfig::default());
+        gb
+    }
+
     /// Apply config and set `PC` to cart entry (skip boot).
     pub fn reset(&mut self, cfg: &MachineConfig) {
         self.cpu = Cpu::new();
@@ -161,5 +172,14 @@ mod tests {
         let mut gb = SoftGbc::new();
         gb.reset(&MachineConfig::default());
         assert_eq!(gb.read8(0xFF44), Some(0), "LY starts at 0 from PPU");
+    }
+
+    #[test]
+    fn from_rom_bytes_skips_boot_to_0100() {
+        let mut raw = vec![0u8; 0x200];
+        raw[0x100] = 0x00; // NOP at entry
+        let gb = SoftGbc::from_rom_bytes(&raw);
+        assert_eq!(gb.cpu.pc, 0x0100);
+        assert_eq!(gb.bus.entry, 0x0100);
     }
 }

@@ -109,3 +109,71 @@ main { padding: 1.5rem 2rem 3rem; max-width: 52rem; }
   opacity: 0.85;
 }
 .lab-meta { margin: 0.75rem 0 0; font-size: 0.88rem; }
+
+.play-panel {
+  margin: 1.5rem 0 2rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(165deg, #f7f5f1 0%, #efeae2 100%);
+}
+.play-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 16rem);
+  gap: 1.25rem 1.5rem;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .play-layout { grid-template-columns: 1fr; }
+}
+.play-live {
+  border-left: 1px solid var(--line);
+  padding-left: 1rem;
+}
+@media (max-width: 900px) {
+  .play-live { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 0.85rem; }
+}
+.play-live h3 { margin: 0 0 0.35rem; font-size: 1rem; }
+.play-live-hint { margin: 0 0 0.65rem; font-size: 0.82rem; color: var(--muted); }
+.play-live-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.play-live-empty { font-size: 0.88rem; color: var(--muted); }
+.play-live-item {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  font: inherit; padding: 0.55rem 0.65rem; border-radius: 6px;
+  border: 1px solid var(--line); background: #fff; color: var(--text);
+}
+.play-live-item:hover { border-color: var(--accent); }
+.play-live-item.is-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.play-live-title { display: block; font-weight: 600; font-size: 0.92rem; }
+.play-live-meta { display: block; font-size: 0.78rem; color: var(--muted); margin-top: 0.15rem; word-break: break-all; }
+.play-share--hint { font-size: 0.82rem; }
+.play-controls {
+  display: flex; flex-wrap: wrap; gap: 1rem 1.25rem; align-items: flex-end;
+  margin: 0.85rem 0 1rem;
+}
+.play-field {
+  display: flex; flex-direction: column; gap: 0.3rem; min-width: 12rem; flex: 1 1 14rem;
+  font-size: 0.85rem; color: var(--muted);
+}
+.play-field select,
+.play-field input[type="file"] {
+  font: inherit; color: var(--text);
+  padding: 0.4rem 0.5rem; border: 1px solid var(--line); border-radius: 4px;
+  background: #fff;
+}
+.play-screen { margin-top: 0.25rem; }
+.play-lcd { width: min(100%, 480px); outline: none; cursor: pointer; }
+.play-lcd:focus,
+.play-lcd--locked { box-shadow: 0 0 0 3px var(--accent); }
+.play-key-lock {
+  margin-left: 0.5rem; font-weight: 600; text-transform: none; letter-spacing: 0;
+  color: var(--accent);
+}
+.play-share {
+  font-size: 0.9rem; color: var(--muted); margin: 0.5rem 0 0.75rem;
+  word-break: break-all;
+}
+.play-share code { font-size: 0.95em; color: var(--text); }
+.lab-play--stop {
+  background: transparent; color: var(--text); border-color: var(--line);
+}

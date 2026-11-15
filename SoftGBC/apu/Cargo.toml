@@ -1,0 +1,9 @@
+[package]
+name = "apu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DMG APU — mute stub first, channels later"
+
+[dependencies]
+peripherals = { path = "../peripherals" }

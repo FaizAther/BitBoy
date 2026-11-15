@@ -279,14 +279,14 @@ def page_shell(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} — SoftGBC docs</title>
+  <title>{title} — GBC platform docs</title>
   <link rel="stylesheet" href="{root}/assets/style.css">
 {extra_head}
 </head>
 <body>
   <div class="layout">
     <nav class="sidebar">
-      <a class="brand" href="{root}/index.html">SoftGBC docs</a>
+      <a class="brand" href="{root}/index.html">GBC platform docs</a>
 {nav_block(root, page_html)}
     </nav>
     <main>
@@ -393,12 +393,16 @@ def fix_gbedg_images(html: str, section: str) -> str:
 
 def build_index() -> None:
     body = """
-<h1>SoftGBC documentation</h1>
-<p><strong>Markdown is the source of truth.</strong> SoftGBC explainers live next to their crates;
-this site (<code>docs/site/</code>) is generated. Datasheets and third-party guides live under repo <code>docs/</code>.</p>
+<h1>GBC platform documentation</h1>
+<p><strong>Markdown is the source of truth.</strong> This generated site covers SoftGBC,
+the SM83 LLVM and QEMU ports, and the agent-first GBC game SDK. Datasheets and
+third-party guides also live under repo <code>docs/</code>.</p>
 <pre><code>cd docs &amp;&amp; ./serve.sh
 # → http://127.0.0.1:8000/</code></pre>
 <div class="cards">
+  <a class="card" href="llvm/overview.html"><strong>LLVM SM83</strong><span>Compiler, ABI, linker, runtime, and validation</span></a>
+  <a class="card" href="qemu/overview.html"><strong>QEMU SM83</strong><span>CPU target, test machine, traces, and GDB</span></a>
+  <a class="card" href="sdk/overview.html"><strong>GBC game SDK</strong><span>Runtime, assets, APIs, and agent workflow</span></a>
   <a class="card" href="softgbc/overview.html"><strong>Roadmap checklist</strong><span>SoftGBC/README — driver + min tests</span></a>
   <a class="card" href="softgbc/dmg-ppu.html"><strong>PPU checklist</strong><span>LY → VBlank → SoftGBC wire → BG</span></a>
   <a class="card" href="softgbc/environment.html"><strong>Environment</strong><span>Video sinks + joypad InputSource</span></a>

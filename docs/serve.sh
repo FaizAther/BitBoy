@@ -46,6 +46,9 @@ fi
 
 LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo "Docs + lab + play:"
+echo "  http://localhost:${PORT}/llvm/overview.html"
+echo "  http://localhost:${PORT}/qemu/overview.html"
+echo "  http://localhost:${PORT}/sdk/overview.html"
 echo "  http://localhost:${PORT}/softgbc/environment.html"
 echo "  http://localhost:${PORT}/softgbc/visual-tests.html"
 if [[ -n "${LAN_IP}" ]]; then

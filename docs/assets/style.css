@@ -21,6 +21,7 @@ body {
 .sidebar li { margin: 0.15rem 0; }
 .sidebar a { color: var(--ink); text-decoration: none; font-size: 0.95rem; }
 .sidebar a:hover { color: var(--accent); text-decoration: underline; }
+.sidebar a.nav-active { color: var(--accent); font-weight: 700; }
 .muted { text-transform: none; letter-spacing: 0; font-size: 0.85em; }
 main { padding: 1.5rem 2rem 3rem; max-width: 52rem; }
 .crumb { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
@@ -54,3 +55,57 @@ main { padding: 1.5rem 2rem 3rem; max-width: 52rem; }
   .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
   main { padding: 1rem; }
 }
+
+/* Visual lab (docs + softgbc-lab API) */
+#visual-lab { margin-top: 1rem; }
+#lab-status { font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
+#lab-status[data-kind="ok"] { color: var(--accent); }
+#lab-status[data-kind="err"] { color: #8b1e1e; }
+.lab-card {
+  margin: 1.25rem 0; padding: 1rem 1.15rem 1.25rem;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+}
+.lab-card h2 { margin: 0 0 0.35rem; font-size: 1.2rem; }
+.lab-desc { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.95rem; }
+.lab-expected {
+  border: 1px dashed var(--line); border-radius: 8px; padding: 0.75rem 0.9rem; margin-bottom: 0.85rem;
+  background: color-mix(in srgb, var(--code-bg) 55%, transparent);
+}
+.lab-expected strong { display: block; margin-bottom: 0.35rem; color: var(--accent); }
+.lab-crc { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 0.9rem; margin-bottom: 0.35rem; }
+.lab-notes { margin: 0.25rem 0 0.5rem; font-size: 0.92rem; }
+.lab-fixture {
+  margin: 0; max-height: 9rem; overflow: auto; font-size: 0.78rem;
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem;
+}
+.lab-actions { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.85rem; }
+.lab-play {
+  font: inherit; font-weight: 600; cursor: pointer;
+  padding: 0.45rem 1.1rem; border-radius: 6px;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+}
+.lab-play:hover { filter: brightness(1.05); }
+.lab-play:disabled { opacity: 0.55; cursor: wait; }
+.lab-badge {
+  font-family: "IBM Plex Mono", Consolas, monospace; font-size: 0.85rem; font-weight: 700;
+  padding: 0.2rem 0.55rem; border-radius: 4px; border: 1px solid var(--line);
+}
+.lab-badge[data-pass="1"] { background: #d8efe6; color: #0b5f4b; border-color: #0b5f4b; }
+.lab-badge[data-pass="0"] { background: #f5d6d6; color: #8b1e1e; border-color: #8b1e1e; }
+.lab-screens {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;
+}
+.lab-screen-cap { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.35rem; }
+.lab-lcd {
+  display: block; width: min(100%, 320px); height: auto; aspect-ratio: 160 / 144;
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  background: #111; border: 1px solid #222; border-radius: 4px; padding: 0;
+  object-fit: cover;
+}
+.lab-lcd--empty {
+  background: repeating-linear-gradient(
+    -45deg, #1a1a1a 0 6px, #222 6px 12px
+  );
+  opacity: 0.85;
+}
+.lab-meta { margin: 0.75rem 0 0; font-size: 0.88rem; }

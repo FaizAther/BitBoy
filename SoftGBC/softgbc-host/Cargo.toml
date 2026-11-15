@@ -1,0 +1,24 @@
+[package]
+name = "softgbc-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host window / remote video sinks for SoftGBC (PPU stays GUI-agnostic)"
+
+[[bin]]
+name = "softgbc-view"
+path = "src/bin/softgbc-view.rs"
+
+[[bin]]
+name = "softgbc-lab"
+path = "src/bin/softgbc-lab.rs"
+
+[dependencies]
+softgbc-utils = { path = "../softgbc-utils" }
+softgbc-core = { path = "../softgbc-core" }
+dmg-ppu = { path = "../dmg-ppu" }
+peripherals = { path = "../peripherals" }
+soc = { path = "../soc" }
+minifb = "0.28"
+tiny_http = "0.12"
+png = "0.17"

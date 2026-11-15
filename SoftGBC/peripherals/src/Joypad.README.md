@@ -6,7 +6,9 @@
 
 ## Status *(2026-11)*
 
-**Stub.** Wire after headless PPU + a window.
+**P1 select + pressed state wired.** Host backends live in `softgbc-host` as
+`InputSource` (manual / channel / web-stub / bluetooth-stub / fan-in) — same idea
+as `FrameSink` for video. Bus routes `FF00` → `Joypad`. IRQ + real keyboard map still open.
 
 ```text
 FF00 write: choose group
@@ -15,6 +17,8 @@ FF00 write: choose group
 
 FF00 read (lower nibble), selected group only:
   pressed → 0    released → 1     (active-low)
+
+Host: InputSource::poll() → Buttons → Joypad::set_pressed
 ```
 
 ## Checklist
@@ -23,7 +27,7 @@ What → Structure → Min test → Done when (pseudocode).
 
 ---
 
-- [ ] **Button state from host**
+- [x] **Button state from host**
 
   **What:** host keyboard/gamepad updates which keys are pressed.  
   **Structure:**
@@ -41,11 +45,11 @@ set A pressed
 select button group
 read FF00 → A bit is 0
 ```
-  **Done when:** host can change keys and reads reflect them.
+  **Done when:** host can change keys and reads reflect them (`set_pressed` + `ManualInput`).
 
 ---
 
-- [ ] **Select lines (directions vs buttons)**
+- [x] **Select lines (directions vs buttons)**
 
   **What:** bits 4–5 of `FF00` choose which nibble is visible.  
   **Structure:**
@@ -69,7 +73,7 @@ read FF00 → only A bit low
 
 ---
 
-- [ ] **Active-low bits**
+- [x] **Active-low bits**
 
   **What:** pressed = 0, released = 1.  
   **Structure:** same read path as above.  
@@ -100,7 +104,7 @@ assert (IF & 0x10) != 0
 
 ---
 
-- [ ] **Wire into bus**
+- [x] **Wire into bus**
 
   **What:** `FF00` routes to Joypad like timer IO.  
   **Structure:**

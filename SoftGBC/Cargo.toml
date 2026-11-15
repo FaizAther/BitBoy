@@ -8,6 +8,7 @@ members = [
     "softgbc-core",
     "peripherals",
     "softgbc-utils",
+    "softgbc-host",
 ]
 
 # Shared package defaults for all members (optional).

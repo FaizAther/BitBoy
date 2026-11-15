@@ -16,8 +16,16 @@ Hosts the **static HTML site** and **reference PDFs**. SoftGBC work is **checkli
 
 ```bash
 cd docs
-./serve.sh                 # http://127.0.0.1:8000/
+./serve.sh                 # http://localhost:8000/  (watch + live reload)
+./serve.sh --no-watch
 ./serve.sh --build-only
 ```
+
+Sidebar **Lab** section → Environment + Visual tests.
+
+- http://localhost:8000/softgbc/environment.html  
+- http://localhost:8000/softgbc/visual-tests.html  
+
+`./serve.sh` watches docs assets / Markdown / `softgbc-lab` sources, rebuilds, and the browser refreshes via `live_reload.js`.
 
 **Rule:** edit Markdown / checklists under SoftGBC; rebuild HTML. Never sync HTML back into MD.

@@ -129,7 +129,8 @@ Every step should leave something you can **run or `cargo test`** before the nex
 | Folder | Role | Status |
 |---|---|---|
 | [`softgbc-core/`](softgbc-core/) | Shared `Bus` trait, `MemoryBus`/`DmgBus`, hex + `.gb` load | **In use** |
-| [`softgbc-utils/`](softgbc-utils/) | Shared helpers (`BitField` / `Reg8`, …) | **In use** |
+| [`softgbc-utils/`](softgbc-utils/) | Shared helpers (`BitField` / `Reg8`, `ShadeFrame`, …) | **In use** |
+| [`softgbc-host/`](softgbc-host/) | Host window + remote sinks (`FrameSink` / WebRTC plug-in); PPU stays GUI-free | **In use** |
 | [`peripherals/`](peripherals/) | Timer + serial/joypad/dma (+ `*.README.md` next to sources) | **Timer wired**; others stub |
 | [`sm83-iss/`](sm83-iss/) | SM83 CPU crate | **ISA done** |
 | [`dmg-ppu/`](dmg-ppu/) | DMG PPU crate | Stub |

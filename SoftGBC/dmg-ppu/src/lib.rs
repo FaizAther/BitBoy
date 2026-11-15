@@ -2,7 +2,7 @@
 
 use peripherals::irq::{IrqLines, IF_STAT, IF_VBLANK};
 use peripherals::IoDevice;
-use softgbc_utils::{crc32, Reg8};
+use softgbc_utils::{crc32, Reg8, ShadeFrame, ShadeFrameSource};
 
 pub mod lcdc;
 pub mod stat;
@@ -183,6 +183,11 @@ impl DmgPpu {
     /// CRC-32 of the current [`Self::framebuffer`] (stable golden hash).
     pub fn frame_crc(&self) -> u32 {
         crc32(&self.framebuffer)
+    }
+
+    /// Borrow the last rendered shade buffer as a host-agnostic [`ShadeFrame`].
+    pub fn shade_frame(&self) -> ShadeFrame<'_> {
+        ShadeFrame::new(SCREEN_W, SCREEN_H, &self.framebuffer)
     }
 
     /// Render BG + window only (`oam` treated as empty). Prefer [`Self::render_frame`].
@@ -418,6 +423,12 @@ fn tile_data_addr(tile_id: u8, unsigned_8000: bool) -> u16 {
     } else {
         // Signed index from $9000 (covers $8800–$97FF).
         (0x9000i32 + i32::from(tile_id as i8) * 16) as u16
+    }
+}
+
+impl ShadeFrameSource for DmgPpu {
+    fn shade_frame(&self) -> ShadeFrame<'_> {
+        DmgPpu::shade_frame(self)
     }
 }
 

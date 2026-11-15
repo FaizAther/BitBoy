@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use dmg_ppu::DmgPpu;
-use peripherals::{IoDevice, Serial, Timer};
+use peripherals::{IoDevice, Joypad, Serial, Timer};
 
 use crate::hex_load::{HexImage, HexLoadError};
 use crate::memory::{Ram, Rom};
@@ -16,6 +16,7 @@ pub trait Bus {
 /// Default DMG-like sizes: `MemoryBus<0x8000, 0x2000, 0x7F, 0x80, 0x1>`.
 ///
 /// Peripheral-owned IO (not flat `io[]`) via [`IoDevice`]:
+/// - `FF00` → [`Joypad`]
 /// - `FF01`–`FF02` → [`Serial`]
 /// - `FF04`–`FF07` → [`Timer`]
 /// - `FF40`–`FF4B` → [`DmgPpu`]
@@ -36,10 +37,12 @@ pub struct MemoryBus<
     /// OAM `$FE00`–`$FE9F`.
     pub oam: [u8; 0xA0],
     /// I/O registers `$FF00`–`$FF7F` (includes IF at `$FF0F`).
-    /// Timer/serial regs are routed to [`Self::timer`] / [`Self::serial`].
+    /// Joypad/timer/serial/PPU regs are routed to their devices.
     io: Ram<IO_SIZE>,
     ie: Ram<IE_SIZE>,
     pub ppu: DmgPpu,
+    /// Joypad — owns `P1` / `FF00` (host feeds pressed keys).
+    pub joypad: Joypad,
     /// DMG timer — owns DIV/TIMA/TMA/TAC and internal 16-bit DIV.
     pub timer: Timer,
     /// Serial link — owns SB/SC and captured output text.
@@ -70,6 +73,7 @@ impl<
             io: Ram::new(),
             ie: Ram::new(),
             ppu: DmgPpu::new(),
+            joypad: Joypad::new(),
             timer: Timer::new(),
             serial: Serial::new(),
             entry: 0x0100,
@@ -291,6 +295,7 @@ impl<
             0x8000..=0x9FFF => Some(self.vram[(addr - 0x8000) as usize]),
             0xC000..=0xFDFF => Self::wram_index(addr).and_then(|i| self.wram.read(i)),
             0xFE00..=0xFE9F => Some(self.oam[(addr - 0xFE00) as usize]),
+            a if Joypad::handles(a) => Some(self.joypad.read(a)),
             a if Serial::handles(a) => Some(self.serial.read(a)),
             a if Timer::handles(a) => Some(self.timer.read(a)),
             a if DmgPpu::handles(a) => Some(self.ppu.read(a)),
@@ -317,6 +322,10 @@ impl<
             }
             0xFE00..=0xFE9F => {
                 self.oam[(addr - 0xFE00) as usize] = data;
+                true
+            }
+            a if Joypad::handles(a) => {
+                self.joypad.write(a, data);
                 true
             }
             a if Serial::handles(a) => {
@@ -452,6 +461,19 @@ mod tests {
         assert_eq!(bus.read8(0x0100), Some(0x00));
         assert_eq!(bus.read8(0x0101), Some(0x76));
         assert_eq!(bus.read8(0x0134), Some(b'T'));
+    }
+
+    #[test]
+    fn joypad_ff00_owned_by_joypad_not_flat_io() {
+        use peripherals::joypad::Buttons;
+        use peripherals::IoDevice;
+
+        let mut bus: DmgBus = MemoryBus::new();
+        bus.joypad.set_pressed(Buttons::A);
+        assert!(bus.write8(0xFF00, 0x10)); // select buttons
+        assert_eq!(bus.read8(0xFF00).unwrap() & 0x01, 0x00);
+        assert_eq!(bus.io.read(0x00), Some(0x00));
+        assert!(Joypad::handles(0xFF00));
     }
 
     #[test]

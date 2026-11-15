@@ -30,6 +30,7 @@ LEARN_AND_CRATE: list[tuple[str, Path, str]] = [
     ("T / M cycles", SOFTGBC / "soc" / "docs" / "t-and-m-cycles.md", "softgbc/t-and-m-cycles.html"),
     ("SoC / machine", SOFTGBC / "soc" / "README.md", "softgbc/soc.html"),
     ("DMG PPU checklist", SOFTGBC / "dmg-ppu" / "README.md", "softgbc/dmg-ppu.html"),
+    # Visual lab page is generated in build_visual_lab() (not from Markdown).
     ("LY fixture", SOFTGBC / "dmg-ppu" / "fixtures" / "01_ly_only.expected.txt", "softgbc/ly-fixture.html"),
     ("SM83 ISS", SOFTGBC / "sm83-iss" / "README.md", "softgbc/sm83-iss.html"),
     ("SM83 fixtures", SOFTGBC / "sm83-iss" / "fixtures" / "README.md", "softgbc/sm83-fixtures.html"),
@@ -118,19 +119,25 @@ def render_body(source: Path, is_gbedg: bool = False) -> str:
     return MD.convert(raw)
 
 
-def nav_block(root: str) -> str:
+def _nav_link(root: str, html: str, label: str, current: str) -> str:
+    href = f"{root}/{html}"
+    cls = ' class="nav-active"' if current == html else ""
+    return f'        <li><a href="{href}"{cls}>{label}</a></li>'
+
+
+def nav_block(root: str, current: str = "") -> str:
     soft = "\n".join(
-        f'        <li><a href="{root}/{html}">{label}</a></li>'
+        _nav_link(root, html, label, current)
         for label, src, html in LEARN_AND_CRATE
         if src.exists()
     )
     gbedg = "\n".join(
-        f'        <li><a href="{root}/{html}">{label}</a></li>'
+        _nav_link(root, html, label, current)
         for label, src, html in GBEDG_PAGES
         if src.exists()
     )
     pandocs = "\n".join(
-        f'        <li><a href="{root}/{html}">{label}</a></li>'
+        _nav_link(root, html, label, current)
         for label, src, html in PANDOCS_PAGES
         if src.exists()
     )
@@ -141,7 +148,17 @@ def nav_block(root: str) -> str:
       <ul>
 {pandocs}
       </ul>"""
+    lab = "\n".join(
+        [
+            _nav_link(root, "softgbc/environment.html", "Environment", current),
+            _nav_link(root, "softgbc/visual-tests.html", "Visual tests", current),
+        ]
+    )
     return f"""
+      <p class="nav-section">Lab</p>
+      <ul>
+{lab}
+      </ul>
       <p class="nav-section">SoftGBC</p>
       <ul>
 {soft}
@@ -158,7 +175,14 @@ def nav_block(root: str) -> str:
 """
 
 
-def page_shell(title: str, body: str, page_html: str, crumb: str) -> str:
+def page_shell(
+    title: str,
+    body: str,
+    page_html: str,
+    crumb: str,
+    extra_head: str = "",
+    extra_scripts: str = "",
+) -> str:
     depth = page_html.count("/")
     root = "/".join([".."] * depth) if depth else "."
     return f"""<!DOCTYPE html>
@@ -168,12 +192,13 @@ def page_shell(title: str, body: str, page_html: str, crumb: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} — SoftGBC docs</title>
   <link rel="stylesheet" href="{root}/assets/style.css">
+{extra_head}
 </head>
 <body>
   <div class="layout">
     <nav class="sidebar">
       <a class="brand" href="{root}/index.html">SoftGBC docs</a>
-{nav_block(root)}
+{nav_block(root, page_html)}
     </nav>
     <main>
       <p class="crumb">{crumb}</p>
@@ -182,15 +207,27 @@ def page_shell(title: str, body: str, page_html: str, crumb: str) -> str:
       </article>
     </main>
   </div>
+{extra_scripts}
+  <script src="{root}/assets/live_reload.js"></script>
 </body>
 </html>
 """
 
 
-def write_page(html_rel: str, title: str, body: str, crumb: str) -> None:
+def write_page(
+    html_rel: str,
+    title: str,
+    body: str,
+    crumb: str,
+    extra_head: str = "",
+    extra_scripts: str = "",
+) -> None:
     out = SITE / html_rel
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page_shell(title, body, html_rel, crumb), encoding="utf-8")
+    out.write_text(
+        page_shell(title, body, html_rel, crumb, extra_head, extra_scripts),
+        encoding="utf-8",
+    )
 
 
 DEFAULT_CSS = """
@@ -275,6 +312,8 @@ this site (<code>docs/site/</code>) is generated. Datasheets and third-party gui
 <div class="cards">
   <a class="card" href="softgbc/overview.html"><strong>Roadmap checklist</strong><span>SoftGBC/README — driver + min tests</span></a>
   <a class="card" href="softgbc/dmg-ppu.html"><strong>PPU checklist</strong><span>LY → VBlank → SoftGBC wire → BG</span></a>
+  <a class="card" href="softgbc/environment.html"><strong>Environment</strong><span>Video sinks + joypad InputSource</span></a>
+  <a class="card" href="softgbc/visual-tests.html"><strong>Visual tests</strong><span>Screen + Play + expected CRC</span></a>
   <a class="card" href="softgbc/timer.html"><strong>Timer checklist</strong><span>Overflow IRQ + accuracy follow-ups</span></a>
   <a class="card" href="softgbc/serial.html"><strong>Serial checklist</strong><span>When IF bit 3 fires</span></a>
   <a class="card" href="gbedg/ppu.html"><strong>GBEDG PPU</strong><span>Hardware deep dive</span></a>
@@ -283,6 +322,80 @@ this site (<code>docs/site/</code>) is generated. Datasheets and third-party gui
 </div>
 """
     write_page("index.html", "Home", body, "Home")
+
+
+def build_visual_lab() -> None:
+    body = """
+<h1>Visual tests</h1>
+<p>Run SoftGBC PPU scenes in the browser: each card has an LCD screen, expected CRC/fixture notes,
+and a <strong>Play</strong> button. Tests <strong>auto-run</strong> when their card scrolls into view.</p>
+<p class="muted">Requires <code>./serve.sh</code> (lab API). See also
+<a href="environment.html">Environment</a> for video sinks + joypad input sources.</p>
+<div id="visual-lab">
+  <p id="lab-status">…</p>
+  <div id="lab-list"></div>
+</div>
+"""
+    write_page(
+        "softgbc/visual-tests.html",
+        "Visual tests",
+        body,
+        "SoftGBC / Visual tests",
+        extra_scripts='  <script src="../assets/visual_lab.js"></script>\n',
+    )
+    print("wrote softgbc/visual-tests.html")
+
+
+def build_environment_page() -> None:
+    body = """
+<h1>Environment</h1>
+<p>How SoftGBC talks to the outside world: <strong>video out</strong> and
+<strong>joypad in</strong>. The PPU and Joypad MMIO stay host-agnostic —
+pluggable backends live in <code>softgbc-host</code>.</p>
+
+<h2>Video (FrameSink)</h2>
+<pre><code>PpuController → run_loop → FrameSink(s)
+  ├─ HostWindow       local minifb / X11
+  ├─ HubSink          HTTP /frame.png preview
+  ├─ ChannelSink      → RemoteEgress (WebRTC stub …)
+  └─ NullSink         tests / CI</code></pre>
+<p>Fan-out can drive several sinks at once (window <em>and</em> browser preview).</p>
+
+<h2>Joypad (InputSource)</h2>
+<pre><code>InputSource::poll() → Buttons → Joypad::set_pressed → FF00
+  ├─ ManualInput / NullInput     tests &amp; scripted presses
+  ├─ ChannelInput                worker thread → emu
+  ├─ WebInputStub                future browser / data channel
+  ├─ BluetoothInputStub          future BLE gamepad
+  └─ FanInInput                  OR several sources</code></pre>
+<p>Same pattern as video: add a backend later without touching <code>dmg-ppu</code> or
+<code>peripherals</code> select/read logic.</p>
+
+<h2>Docs server (<code>./serve.sh</code>)</h2>
+<ul>
+  <li>Builds static HTML + <code>softgbc-lab</code></li>
+  <li>Serves site with <code>/api/visual-tests</code> (Play → PNG + expected CRC)</li>
+  <li>Fixture text under <code>/api/fixtures/…</code></li>
+</ul>
+<p><a href="visual-tests.html"><strong>Open visual tests →</strong></a>
+(screen + Play + expected outcome per scene)</p>
+
+<h2>Quick commands</h2>
+<pre><code>cd docs &amp;&amp; ./serve.sh
+# → http://127.0.0.1:8000/softgbc/environment.html
+# → http://127.0.0.1:8000/softgbc/visual-tests.html
+
+cargo run -p softgbc-host --bin softgbc-view -- --demo --http 8765
+cargo run -p softgbc-host --bin softgbc-lab -- list
+cargo run -p softgbc-host --bin softgbc-lab -- run solid_bg</code></pre>
+"""
+    write_page(
+        "softgbc/environment.html",
+        "Environment",
+        body,
+        "SoftGBC / Environment",
+    )
+    print("wrote softgbc/environment.html")
 
 
 def build_attribution() -> None:
@@ -349,8 +462,14 @@ def main() -> None:
     shutil.copy2(css_src, assets / "style.css")
 
     build_index()
+    build_environment_page()
+    build_visual_lab()
     build_attribution()
     build_datasheets_index()
+    for name in ("visual_lab.js", "live_reload.js"):
+        js_src = DOCS / "assets" / name
+        if js_src.exists():
+            shutil.copy2(js_src, assets / name)
 
     for label, src, html_rel in LEARN_AND_CRATE:
         if not src.exists():

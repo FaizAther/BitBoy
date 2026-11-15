@@ -88,7 +88,8 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(procs), 1)
 
     def test_different_sids_get_different_ports(self):
-        ports = iter([9201, 9202])
+        # Each spawn picks HTTP + GDB ports.
+        ports = iter([9201, 9202, 9203, 9204])
 
         def popen(*_a, **_k):
             return FakeProc()
@@ -102,7 +103,9 @@ class SessionTests(unittest.TestCase):
         a, _ = mgr.ensure("userAAA1")
         b, _ = mgr.ensure("userBBB2")
         self.assertEqual(a.port, 9201)
-        self.assertEqual(b.port, 9202)
+        self.assertEqual(a.gdb_port, 9202)
+        self.assertEqual(b.port, 9203)
+        self.assertEqual(b.gdb_port, 9204)
         self.assertEqual(mgr.session_count(), 2)
 
     def test_list_live_includes_meta(self):
@@ -123,6 +126,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(live[0]["title"], "TETRIS DX")
         self.assertEqual(live[0]["frames"], 42)
         self.assertTrue(live[0]["running"])
+        self.assertIn("gdb_port", live[0])
 
 
 if __name__ == "__main__":

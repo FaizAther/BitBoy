@@ -22,6 +22,7 @@
 
 mod controller;
 mod driver;
+pub mod gdb;
 mod http_preview;
 mod input;
 mod remote;
@@ -30,6 +31,7 @@ pub mod visual_tests;
 mod window;
 
 pub use controller::{DemoPpuController, PpuController, SoftGbcController};
+pub use gdb::{run_gdb_listener, GdbMachine, Sm83Regs};
 pub use driver::{run_driver, DriverConfig, DriverHandles};
 pub use http_preview::{encode_frame_png, encode_frame_rgb, FrameHub, HttpPreviewServer, HubSink};
 pub use input::{

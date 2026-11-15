@@ -31,6 +31,7 @@ SID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 class PlaySession:
     sid: str
     port: int
+    gdb_port: int = 0
     proc: subprocess.Popen | None = None
     last_used: float = field(default_factory=time.time)
     title: str = ""
@@ -173,6 +174,7 @@ class PlaySessionManager:
                         "frames": s.frames,
                         "running": s.running,
                         "idle_sec": int(max(0, now - s.last_used)),
+                        "gdb_port": s.gdb_port,
                     }
                 )
             return out
@@ -222,9 +224,16 @@ class PlaySessionManager:
         if not self.play_bin.is_file():
             return f"softgbc-play missing: {self.play_bin}"
         port = self._port_picker()
+        gdb_port = self._port_picker()
         try:
             proc = self._popen(
-                [str(self.play_bin), "--port", str(port)],
+                [
+                    str(self.play_bin),
+                    "--port",
+                    str(port),
+                    "--gdb-port",
+                    str(gdb_port),
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
@@ -242,8 +251,25 @@ class PlaySessionManager:
                 break
             time.sleep(0.05)
 
-        self._sessions[sid] = PlaySession(sid=sid, port=port, proc=proc)
+        # Prefer gdb_port reported by /status (binds may remap).
+        reported = self._status_gdb_port(port) or gdb_port
+        self._sessions[sid] = PlaySession(
+            sid=sid, port=port, gdb_port=reported, proc=proc
+        )
         return None
+
+    @staticmethod
+    def _status_gdb_port(http_port: int) -> int:
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{http_port}/status", timeout=0.5
+            ) as resp:
+                obj = json.loads(resp.read().decode("utf-8"))
+                return int(obj.get("gdb_port") or 0)
+        except Exception:
+            return 0
 
     @staticmethod
     def _default_probe(port: int) -> bool:

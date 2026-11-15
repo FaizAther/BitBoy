@@ -1,0 +1,31 @@
+{
+  "weights": [
+    1.5324843596680844,
+    0.5663081098828108,
+    0.35389675091295414,
+    1.1335728230328892,
+    1.526664383209193,
+    0.3825015269044447,
+    0.48156381636466805
+  ],
+  "fitness": 2,
+  "generation": 2,
+  "champion": "darwin1",
+  "board": [
+    {
+      "id": "darwin1",
+      "best": "name/file",
+      "final": "name/file"
+    },
+    {
+      "id": "darwin2",
+      "best": "name/file",
+      "final": "name/file"
+    },
+    {
+      "id": "darwin3",
+      "best": "name/file",
+      "final": "name/file"
+    }
+  ]
+}

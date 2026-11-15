@@ -23,6 +23,8 @@ softgbc-core = { path = "../softgbc-core" }
 dmg-ppu = { path = "../dmg-ppu" }
 peripherals = { path = "../peripherals" }
 soc = { path = "../soc" }
+sm83-iss = { path = "../sm83-iss" }
 minifb = "0.28"
 tiny_http = "0.12"
 png = "0.17"
+gdbstub = "0.7"

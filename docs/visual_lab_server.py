@@ -306,9 +306,10 @@ class LabHandler(BaseHTTPRequestHandler):
 
         is_frame = play_path.startswith("/frame.")
 
-        # Frame/status polls must NEVER spawn an emu. Only /load does that.
+        # Frame/status/debug polls must NEVER spawn an emu. Only /load does that.
         # Spawning on poll + stacked Image() requests froze the machine.
-        if is_frame or play_path == "/status":
+        is_probe = play_path in ("/status", "/debug")
+        if is_frame or is_probe:
             port = get_play_mgr().ports_for(sid)
             if not port:
                 if is_frame:
@@ -316,6 +317,24 @@ class LabHandler(BaseHTTPRequestHandler):
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("X-Play-Session", sid)
                     self.end_headers()
+                elif play_path == "/debug":
+                    self._json(
+                        200,
+                        {
+                            "loaded": False,
+                            "cpu": None,
+                            "ppu": None,
+                            "irq": None,
+                            "joypad": {"bits": 0},
+                            "run": {
+                                "frames": 0,
+                                "title": "",
+                                "running": False,
+                            },
+                            "session": sid,
+                        },
+                        extra_headers=extras,
+                    )
                 else:
                     self._json(
                         200,
@@ -362,11 +381,16 @@ class LabHandler(BaseHTTPRequestHandler):
                         obj = json.loads(resp)
                         if isinstance(obj, dict):
                             obj["session"] = sid
+                            run = obj.get("run") if isinstance(obj.get("run"), dict) else {}
                             get_play_mgr().update_meta(
                                 sid,
-                                title=obj.get("title"),
-                                frames=obj.get("frames"),
-                                running=obj.get("running"),
+                                title=obj.get("title") or run.get("title"),
+                                frames=obj.get("frames")
+                                if obj.get("frames") is not None
+                                else run.get("frames"),
+                                running=obj.get("running")
+                                if obj.get("running") is not None
+                                else run.get("running"),
                             )
                             resp = json.dumps(obj).encode("utf-8")
                     except json.JSONDecodeError:
@@ -487,6 +511,10 @@ class LabHandler(BaseHTTPRequestHandler):
 
         if path == "/api/play/status":
             self._play_proxy("GET", "/status")
+            return
+
+        if path == "/api/play/debug":
+            self._play_proxy("GET", "/debug")
             return
 
         if path == "/api/play/frame.png":

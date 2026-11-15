@@ -1,0 +1,997 @@
+#!/usr/bin/env python3
+"""SoftGBC Tetris agent: Darwin menu learning → continuous play + GDB watch.
+
+Single entry point (do not add sibling race/scout scripts):
+
+  ./play_agent.sh                      # forever on softgbcBot1
+  ./play_agent.sh --darwin             # evolve genomes, promote winner, then play
+  python3 play_agent.py --darwin --bots 4 --generations 3 --gen-seconds 25
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import random
+import socket
+import sys
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+DOCS = Path(__file__).resolve().parent
+DEFAULT_LOG = DOCS / "play_agent.log"
+GENOME_PATH = DOCS / "play_agent_genome.json"
+TETRIS = "Tetris DX (World) (SGB Enhanced) (GB Compatible).gbc"
+
+RIGHT, LEFT, UP, DOWN = 1 << 0, 1 << 1, 1 << 2, 1 << 3
+A, B, SELECT, START = 1 << 4, 1 << 5, 1 << 6, 1 << 7
+
+PF_X0, PF_Y0 = 16, 16
+PF_COLS, PF_ROWS = 10, 18
+CELL = 8
+SCREEN_W, SCREEN_H = 160, 144
+
+
+class PlayClient:
+    def __init__(self, base: str, session: str):
+        self.base = base.rstrip("/")
+        self.session = session
+
+    def _req(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str | None = None,
+        timeout: float = 10.0,
+        raw: bool = False,
+    ) -> tuple[int, object]:
+        url = f"{self.base}{path}"
+        sep = "&" if "?" in path else "?"
+        if "s=" not in path:
+            url = f"{url}{sep}s={self.session}"
+        headers = {"X-Play-Session": self.session}
+        if not raw:
+            headers["Accept"] = "application/json"
+        if content_type:
+            headers["Content-Type"] = content_type
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+                code = resp.getcode()
+        except urllib.error.HTTPError as e:
+            data = e.read()
+            code = e.code
+        except urllib.error.URLError as e:
+            return 0, {"error": str(e.reason)}
+        except (TimeoutError, TimeoutError, OSError) as e:
+            # socket.timeout / http read stalls during GDB halt contention
+            return 0, {"error": f"timeout:{e}"}
+        if raw:
+            return code, data
+        if not data:
+            return code, {}
+        try:
+            return code, json.loads(data.decode("utf-8"))
+        except json.JSONDecodeError:
+            return code, {"raw": data[:200].decode("utf-8", errors="replace")}
+
+    def load_builtin(self, name: str) -> tuple[int, object]:
+        return self._req(
+            "POST",
+            "/api/play/load/builtin",
+            body=json.dumps({"name": name}).encode(),
+            content_type="application/json",
+            timeout=60.0,
+        )
+
+    def input_bits(self, bits: int) -> tuple[int, object]:
+        # softgbc-play parses {"bits":N} with NO space after ':' — default
+        # json.dumps spaces break input (400 bad json) so the agent never moves.
+        body = json.dumps({"bits": bits & 0xFF}, separators=(",", ":")).encode()
+        return self._req(
+            "POST",
+            "/api/play/input",
+            body=body,
+            content_type="application/json",
+            timeout=5.0,
+        )
+
+    def status(self) -> tuple[int, object]:
+        return self._req("GET", "/api/play/status", timeout=5.0)
+
+    def debug(self) -> tuple[int, object]:
+        return self._req("GET", "/api/play/debug", timeout=5.0)
+
+    def sessions(self) -> tuple[int, object]:
+        return self._req("GET", "/api/play/sessions", timeout=5.0)
+
+    def frame_rgb(self) -> tuple[int, bytes]:
+        code, data = self._req("GET", "/api/play/frame.rgb", timeout=3.0, raw=True)
+        return code, data if isinstance(data, (bytes, bytearray)) else b""
+
+    def gdb_port_for_self(self) -> int:
+        """Prefer /sessions (no emu lock) over /status."""
+        code, data = self.sessions()
+        if code == 200 and isinstance(data, dict):
+            for s in data.get("sessions") or []:
+                if s.get("id") == self.session:
+                    return int(s.get("gdb_port") or 0)
+        code, st = self.status()
+        if code == 200 and isinstance(st, dict):
+            return int(st.get("gdb_port") or 0)
+        return 0
+
+
+# --- GDB RSP (brief attach; samples SM83 then detaches so play can resume) ---
+
+
+def _checksum(payload: bytes) -> int:
+    return sum(payload) & 0xFF
+
+
+def _decode_rle(body: bytes) -> bytes:
+    """Decode GDB run-length encoding in packet bodies."""
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        b = body[i]
+        if b == ord("*") and out and i + 1 < len(body):
+            # repeat previous byte (n - 29) times; n is next char
+            n = body[i + 1] - 29
+            if n > 0:
+                out.extend([out[-1]] * n)
+            i += 2
+            continue
+        out.append(b)
+        i += 1
+    return bytes(out)
+
+
+class GdbClient:
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+
+    def sample(self) -> dict:
+        """Attach, read regs + 4 bytes at PC, detach. Raises on failure."""
+        s = socket.create_connection((self.host, self.port), timeout=2.0)
+        s.settimeout(2.0)
+        try:
+            s.sendall(b"+")
+            self._send(s, "qSupported:swbreak+")
+            self._recv(s)
+            s.sendall(b"+")
+            self._send(s, "Hg0")
+            self._recv(s)
+            s.sendall(b"+")
+            self._send(s, "g")
+            g_raw = self._recv(s)
+            s.sendall(b"+")
+            regs = self._parse_g(g_raw)
+            pc = regs["pc"]
+            self._send(s, f"m{pc:x},4")
+            m_raw = self._recv(s)
+            s.sendall(b"+")
+            mem = self._parse_m(m_raw)
+            # Detach cleanly so softgbc-play clears gdb_halted.
+            self._send(s, "D")
+            try:
+                self._recv(s)
+            except Exception:
+                pass
+            return {"regs": regs, "mem_at_pc": mem, "raw_g": g_raw[:80]}
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    def _send(self, sock: socket.socket, payload: str) -> None:
+        data = payload.encode()
+        sock.sendall(b"$" + data + b"#" + f"{_checksum(data):02x}".encode())
+
+    def _recv(self, sock: socket.socket) -> bytes:
+        # Skip acks until '$'
+        while True:
+            b = sock.recv(1)
+            if not b:
+                raise EOFError("gdb eof")
+            if b == b"$":
+                break
+        buf = bytearray(b"$")
+        while True:
+            b = sock.recv(1)
+            if not b:
+                raise EOFError("gdb eof mid-pkt")
+            buf.extend(b)
+            if len(buf) >= 4 and buf[-3] == ord("#"):
+                break
+        # body between $ and #
+        body = bytes(buf[1:-3])
+        return _decode_rle(body)
+
+    def _parse_g(self, body: bytes) -> dict:
+        # Expect hex digits for 16×u32 LE (i386 layout).
+        hexbody = body
+        if hexbody[:1] in (b"E", b"e") and len(hexbody) < 8:
+            raise RuntimeError(f"gdb g error: {hexbody!r}")
+        # Strip non-hex
+        hx = "".join(chr(c) for c in hexbody if chr(c) in "0123456789abcdefABCDEF")
+        raw = bytes.fromhex(hx)
+        if len(raw) < 40:
+            raise RuntimeError(f"short g packet ({len(raw)} bytes)")
+
+        def u32(off: int) -> int:
+            return int.from_bytes(raw[off : off + 4], "little")
+
+        return {
+            "af": u32(0) & 0xFFFF,
+            "bc": u32(4) & 0xFFFF,
+            "de": u32(8) & 0xFFFF,
+            "hl": u32(12) & 0xFFFF,
+            "sp": u32(16) & 0xFFFF,
+            "pc": u32(32) & 0xFFFF,
+            "ime": bool(u32(36)),
+        }
+
+    def _parse_m(self, body: bytes) -> list[int]:
+        hx = "".join(chr(c) for c in body if chr(c) in "0123456789abcdefABCDEF")
+        raw = bytes.fromhex(hx) if hx else b""
+        return list(raw)
+
+
+def log_line(fp, msg: str) -> None:
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    fp.write(line + "\n")
+    fp.flush()
+
+
+def hold(client: PlayClient, bits: int, hold_s: float) -> None:
+    client.input_bits(bits)
+    time.sleep(hold_s)
+    client.input_bits(0)
+
+
+def tap(client: PlayClient, bits: int, hold_s: float = 0.06, gap_s: float = 0.08) -> None:
+    hold(client, bits, hold_s)
+    time.sleep(gap_s)
+
+
+def in_gameplay_screen(rgb: bytes) -> bool:
+    """True when the Marathon playfield brick well is visible (not title/menus)."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
+    if _is_title_menu(rgb):
+        return False
+    # Left brick wall ~x=8..14: many dark pixels, but NOT a full-screen checkerboard.
+    dark = 0
+    for y in range(24, 120, 2):
+        i = (y * SCREEN_W + 10) * 3
+        if rgb[i] < 100:
+            dark += 1
+    # Right HUD panel is lighter (score) — sample x=130.
+    right_light = 0
+    for y in range(24, 80, 2):
+        i = (y * SCREEN_W + 130) * 3
+        if rgb[i] > 180:
+            right_light += 1
+    return dark >= 24 and right_light >= 8
+
+
+def looks_like_demo(rgb: bytes) -> bool:
+    """Attract DEMO badge mid-well — only when already on a playfield screen."""
+    if not in_gameplay_screen(rgb):
+        return False
+    dark = 0
+    total = 0
+    for y in range(36, 58):
+        for x in range(48, 104):
+            i = (y * SCREEN_W + x) * 3
+            total += 1
+            if rgb[i] < 140:
+                dark += 1
+    ratio = dark / max(total, 1)
+    return 0.08 <= ratio <= 0.45
+
+
+def exit_demo_if_needed(client: PlayClient, fp, rgb: bytes | None) -> bool:
+    if rgb is None or not looks_like_demo(rgb):
+        return False
+    log_line(fp, "demo: attract mode detected — Start to exit")
+    for _ in range(3):
+        tap(client, START, 0.15, 0.4)
+    return True
+
+
+# Menu action set for Darwin genomes (bit → weight index order).
+MENU_ACTIONS = (UP, DOWN, LEFT, RIGHT, A, B, START)
+STAGE_NAMES = {
+    -1: "DEMO",
+    0: "boot",
+    1: "title",
+    2: "name/file",
+    3: "mode",
+    4: "level",
+    5: "LIVE",
+}
+
+
+def _is_title_menu(rgb: bytes) -> bool:
+    """Checkerboard title: mid-gray tiles in the top-left, not copyright white."""
+    if len(rgb) < SCREEN_W * SCREEN_H * 3:
+        return False
+    vals = [rgb[(y * SCREEN_W + x) * 3] for y in range(0, 40) for x in range(0, 40)]
+    avg = sum(vals) // max(len(vals), 1)
+    uniq = len(set(vals))
+    return uniq <= 6 and 40 < avg < 180
+
+
+def _looks_like_name_keyboard(rgb: bytes) -> bool:
+    """Letter grid (not file-select list): dense glyphs in lower panel."""
+    if _is_title_menu(rgb) or in_gameplay_screen(rgb):
+        return False
+    dark = 0
+    for y in range(100, 130):
+        for x in range(16, 144):
+            if rgb[(y * SCREEN_W + x) * 3] < 90:
+                dark += 1
+    return dark >= 400
+
+
+def _white_frac(rgb: bytes) -> float:
+    n = sum(1 for i in range(0, len(rgb), 3) if rgb[i] > 230)
+    return n / (SCREEN_W * SCREEN_H)
+
+
+def classify_stage(rgb: bytes) -> int:
+    """Fitness stage: higher is better. DEMO = -1 penalty."""
+    if looks_like_demo(rgb):
+        return -1
+    if in_gameplay_screen(rgb):
+        return 5
+    if _is_title_menu(rgb):
+        return 1
+    if _looks_like_name_keyboard(rgb):
+        return 2
+    wf = _white_frac(rgb)
+    dark_edge = 0
+    for y in range(0, SCREEN_H, 4):
+        for x in (2, SCREEN_W - 3):
+            if rgb[(y * SCREEN_W + x) * 3] < 60:
+                dark_edge += 1
+    if dark_edge >= 20 and 0.25 < wf < 0.55:
+        mid_dark = sum(
+            1
+            for y in range(40, 70)
+            for x in range(40, 120)
+            if rgb[(y * SCREEN_W + x) * 3] < 80
+        )
+        return 4 if mid_dark > 120 else 3
+    if wf > 0.55:
+        return 2
+    if wf > 0.35:
+        return 3
+    return 0
+
+
+def default_genome() -> list[float]:
+    # Mild bias: A and UP help menus; keep exploration on the rest.
+    return [1.4, 0.8, 0.7, 0.9, 1.6, 0.6, 0.5]
+
+
+def load_genome(path: Path = GENOME_PATH) -> dict:
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            w = data.get("weights")
+            if isinstance(w, list) and len(w) == len(MENU_ACTIONS):
+                return data
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    return {
+        "weights": default_genome(),
+        "fitness": 0,
+        "generation": 0,
+        "champion": None,
+    }
+
+
+def save_genome(data: dict, path: Path = GENOME_PATH) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def mutate_weights(weights: list[float], rng: random.Random, scale: float = 0.35) -> list[float]:
+    out = []
+    for w in weights:
+        nw = max(0.05, w + rng.gauss(0, scale))
+        out.append(nw)
+    return out
+
+
+def sample_action(weights: list[float], rng: random.Random) -> int:
+    # Softmax over weights → pick MENU_ACTIONS index.
+    m = max(weights)
+    exps = [math.exp(w - m) for w in weights]
+    total = sum(exps) or 1.0
+    r = rng.random() * total
+    acc = 0.0
+    for i, e in enumerate(exps):
+        acc += e
+        if r <= acc:
+            return MENU_ACTIONS[i]
+    return MENU_ACTIONS[-1]
+
+
+def dismiss_copyright(client: PlayClient, budget_s: float = 8.0) -> None:
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < budget_s:
+        code, rgb = client.frame_rgb()
+        if code == 200 and isinstance(rgb, (bytes, bytearray)) and _is_title_menu(bytes(rgb)):
+            return
+        tap(client, A, 0.16, 0.28)
+
+
+def run_menu_genome(
+    client: PlayClient,
+    weights: list[float],
+    seconds: float,
+    rng: random.Random,
+) -> tuple[int, int]:
+    """Drive menus with genome. Returns (best_stage, final_stage)."""
+    dismiss_copyright(client)
+    best = 0
+    final = 0
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        code, rgb = client.frame_rgb()
+        if code != 200 or not isinstance(rgb, (bytes, bytearray)):
+            tap(client, A, 0.15, 0.3)
+            continue
+        rgb_b = bytes(rgb)
+        st = classify_stage(rgb_b)
+        final = st
+        if st > best:
+            best = st
+        if st == 5:
+            break
+        if st == -1:
+            tap(client, START, 0.2, 0.4)
+            continue
+        # Name keyboard: scripted END (random letters never learn this).
+        if _looks_like_name_keyboard(rgb_b):
+            tap(client, DOWN, 0.22, 0.32)
+            tap(client, DOWN, 0.22, 0.32)
+            for _ in range(12):
+                tap(client, RIGHT, 0.1, 0.14)
+            tap(client, A, 0.3, 0.5)
+            tap(client, RIGHT, 0.1, 0.14)
+            tap(client, A, 0.3, 0.5)
+            # Escape hatch if still on grid.
+            code2, rgb2 = client.frame_rgb()
+            if (
+                code2 == 200
+                and isinstance(rgb2, (bytes, bytearray))
+                and _looks_like_name_keyboard(bytes(rgb2))
+            ):
+                for _ in range(2):
+                    tap(client, B, 0.2, 0.35)
+            continue
+        btn = sample_action(weights, rng)
+        # On title, bias UP then A (genome still learns; this seeds selection).
+        if _is_title_menu(rgb_b) and rng.random() < 0.45:
+            tap(client, UP, 0.22, 0.35)
+            tap(client, A, 0.22, 0.45)
+            continue
+        tap(client, btn, 0.18, 0.32)
+    return best, final
+
+
+def enter_tetris(client: PlayClient, fp, genome: dict | None = None) -> None:
+    """Use best learned genome (or default) until LIVE or timeout."""
+    g = genome or load_genome()
+    weights = list(g.get("weights") or default_genome())
+    log_line(
+        fp,
+        f"menu: Darwin genome gen={g.get('generation', 0)} "
+        f"prior_fit={g.get('fitness', 0)} → Marathon",
+    )
+    code, ack = client.input_bits(0)
+    if code != 200:
+        log_line(fp, f"menu: WARN input rejected http={code} body={ack}")
+    rng = random.Random(0xC0FFEE ^ int(time.time()) & 0xFFFF)
+    best, final = run_menu_genome(client, weights, seconds=55.0, rng=rng)
+    log_line(
+        fp,
+        f"menu: stage best={STAGE_NAMES.get(best, best)} "
+        f"final={STAGE_NAMES.get(final, final)}",
+    )
+    if best < 5:
+        log_line(fp, "menu: WARN not LIVE yet — play loop may still recover")
+
+
+def darwin_evolve(
+    base: str,
+    bots: int,
+    generations: int,
+    gen_seconds: float,
+    fp,
+    survivors: int = 2,
+) -> dict:
+    """Multi-bot tournament: fitness by stage; mutate winners; persist genome."""
+    rng = random.Random(0xDA241)
+    state = load_genome()
+    population = [list(state["weights"])]
+    while len(population) < bots:
+        population.append(mutate_weights(population[0], rng))
+
+    champion_session = None
+    for gen in range(1, generations + 1):
+        log_line(fp, f"darwin: generation {gen}/{generations} bots={bots}")
+        scored: list[tuple[int, int, list[float], str]] = []
+
+        def eval_bot(idx_weights: tuple[int, list[float]]):
+            idx, weights = idx_weights
+            sid = f"darwin{idx}"
+            client = PlayClient(base, sid)
+            code, body = client.load_builtin(TETRIS)
+            if code != 200:
+                return (0, 0, weights, sid, f"load_fail:{body}")
+            brng = random.Random(rng.randint(0, 1_000_000) + idx)
+            best, final = run_menu_genome(client, weights, gen_seconds, brng)
+            return (best, final, weights, sid, None)
+
+        with ThreadPoolExecutor(max_workers=bots) as pool:
+            futs = [
+                pool.submit(eval_bot, (i + 1, population[i]))
+                for i in range(bots)
+            ]
+            for fut in as_completed(futs):
+                best, final, weights, sid, err = fut.result()
+                fit = best if best >= 0 else -1
+                scored.append((fit, final, weights, sid))
+                log_line(
+                    fp,
+                    f"darwin: {sid} best={STAGE_NAMES.get(best, best)} "
+                    f"now={STAGE_NAMES.get(final, final)}"
+                    + (f" err={err}" if err else ""),
+                )
+
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        keep = max(1, min(survivors, len(scored)))
+        elites = scored[:keep]
+        champion_session = elites[0][3]
+        state = {
+            "weights": elites[0][2],
+            "fitness": elites[0][0],
+            "generation": int(state.get("generation") or 0) + 1,
+            "champion": champion_session,
+            "board": [
+                {
+                    "id": sid,
+                    "best": STAGE_NAMES.get(fit, fit),
+                    "final": STAGE_NAMES.get(fin, fin),
+                }
+                for fit, fin, _, sid in scored
+            ],
+        }
+        save_genome(state)
+        log_line(
+            fp,
+            f"darwin: survivors={[s[3] for s in elites]} "
+            f"champ={champion_session} fit={STAGE_NAMES.get(elites[0][0], elites[0][0])}",
+        )
+        if elites[0][0] >= 5:
+            log_line(fp, "darwin: LIVE reached — stop evolving")
+            break
+        # Next generation: elites + mutated children
+        population = [list(e[2]) for e in elites]
+        while len(population) < bots:
+            parent = elites[rng.randrange(keep)][2]
+            population.append(mutate_weights(parent, rng))
+
+    return state
+
+
+def cell_filled(rgb: bytes, col: int, row: int) -> bool:
+    x = PF_X0 + col * CELL + CELL // 2
+    y = PF_Y0 + row * CELL + CELL // 2
+    if x >= SCREEN_W or y >= SCREEN_H:
+        return False
+    i = (y * SCREEN_W + x) * 3
+    return rgb[i] < 180
+
+
+def column_heights(rgb: bytes) -> list[int]:
+    heights = []
+    for c in range(PF_COLS):
+        h = 0
+        for r in range(PF_ROWS):
+            if cell_filled(rgb, c, r):
+                h = PF_ROWS - r
+                break
+        heights.append(h)
+    return heights
+
+
+def pick_move(heights: list[int], n: int) -> int:
+    if not heights:
+        return DOWN
+    target = min(range(PF_COLS), key=lambda c: (heights[c], abs(c - 4)))
+    phase = n % 8
+    if phase in (0, 1, 2):
+        return DOWN
+    if phase == 3:
+        return A
+    if phase == 4:
+        return B
+    if target < 3:
+        return LEFT
+    if target > 5:
+        return RIGHT
+    if phase == 5:
+        return LEFT if n % 2 == 0 else RIGHT
+    return DOWN
+
+
+def read_proc(pid: int) -> dict | None:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            parts = f.read().split()
+        utime = int(parts[13])
+        stime = int(parts[14])
+        rss_pages = int(parts[23])
+        page = os.sysconf("SC_PAGE_SIZE")
+        return {"pid": pid, "cpu_ticks": utime + stime, "rss_kib": (rss_pages * page) // 1024}
+    except (FileNotFoundError, IndexError, ValueError, OSError):
+        return None
+
+
+def find_play_pids() -> list[int]:
+    pids = []
+    try:
+        for name in Path("/proc").iterdir():
+            if not name.name.isdigit():
+                continue
+            try:
+                cmd = (name / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="ignore"
+                )
+            except OSError:
+                continue
+            if "softgbc-play" in cmd:
+                pids.append(int(name.name))
+    except OSError:
+        pass
+    return pids
+
+
+def host_snapshot(prev_ticks: dict[int, tuple[float, int]]) -> tuple[str, dict]:
+    now = time.monotonic()
+    hz = os.sysconf("SC_CLK_TCK")
+    bits = []
+    new_prev: dict[int, tuple[float, int]] = {}
+    try:
+        load1, load5, load15 = os.getloadavg()
+        bits.append(f"load={load1:.2f}/{load5:.2f}/{load15:.2f}")
+    except OSError:
+        pass
+    for pid in find_play_pids():
+        info = read_proc(pid)
+        if not info:
+            continue
+        ticks = info["cpu_ticks"]
+        cpu_pct = 0.0
+        if pid in prev_ticks:
+            t0, ticks0 = prev_ticks[pid]
+            dt = now - t0
+            if dt > 0.05:
+                cpu_pct = 100.0 * (ticks - ticks0) / (hz * dt)
+        new_prev[pid] = (now, ticks)
+        bits.append(f"play[{pid}] cpu={cpu_pct:.1f}% rss={info['rss_kib']}KiB")
+    return (" ".join(bits) if bits else "host=n/a", new_prev)
+
+
+def analyze_http(prev: dict | None, status: dict, debug: dict) -> list[str]:
+    flags: list[str] = []
+    if not status.get("loaded") and not debug.get("loaded"):
+        return ["session_unloaded"]
+    frames = status.get("frames")
+    if frames is None and isinstance(debug.get("run"), dict):
+        frames = debug["run"].get("frames")
+    running = status.get("running")
+    if running is None and isinstance(debug.get("run"), dict):
+        running = debug["run"].get("running")
+    cpu = debug.get("cpu") or {}
+    pc = cpu.get("pc")
+    halted = bool(cpu.get("halted"))
+
+    if prev:
+        if running and prev.get("frames") == frames and frames is not None:
+            flags.append(f"frame_stall frames={frames}")
+        if (
+            frames is not None
+            and prev.get("frames") is not None
+            and frames > prev["frames"]
+            and pc is not None
+            and pc == prev.get("pc")
+            and (prev.get("pc_same", 0) + 1) >= 8
+        ):
+            flags.append(f"pc_stuck pc=0x{pc:04X}")
+        if halted and prev.get("halted") and (prev.get("halt_same", 0) + 1) >= 12:
+            flags.append("halted_stuck")
+        ie = (debug.get("irq") or {}).get("ie")
+        if ie is not None and (ie & 1) and prev.get("if_zero_streak", 0) >= 40:
+            flags.append("vblank_if_never_seen")
+    return flags
+
+
+def analyze_gdb(gdb_snap: dict, prev_gdb: dict | None) -> list[str]:
+    flags: list[str] = []
+    regs = gdb_snap.get("regs") or {}
+    mem = gdb_snap.get("mem_at_pc") or []
+    pc = regs.get("pc")
+    sp = regs.get("sp")
+    if pc is None:
+        return ["gdb_no_pc"]
+    if sp is not None and (sp < 0xC000 or sp > 0xFFFE):
+        # Not always wrong (stack can be elsewhere) — flag extreme cases.
+        if sp < 0x8000:
+            flags.append(f"gdb_sp_suspicious sp=0x{sp:04X}")
+    if mem:
+        op = mem[0]
+        # Illegal / unused SM83 opcodes often seen when PC wanders into garbage.
+        illegal = {0xD3, 0xDB, 0xDD, 0xE3, 0xE4, 0xEB, 0xEC, 0xED, 0xF4, 0xFC, 0xFD}
+        if op in illegal:
+            flags.append(f"gdb_illegal_opcode op=0x{op:02X} pc=0x{pc:04X}")
+    if prev_gdb and prev_gdb.get("pc") == pc and prev_gdb.get("mem") == mem:
+        if prev_gdb.get("same", 0) + 1 >= 3:
+            flags.append(f"gdb_pc_frozen pc=0x{pc:04X} mem={mem}")
+    return flags
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="http://127.0.0.1:8000")
+    ap.add_argument("--session", default="softgbcBot1")
+    ap.add_argument("--rom", default=TETRIS)
+    ap.add_argument("--seconds", type=float, default=0.0)
+    ap.add_argument("--play-hz", type=float, default=6.0)
+    ap.add_argument("--vision-every", type=float, default=0.75, help="how often to pull frame.rgb")
+    ap.add_argument("--probe-every", type=float, default=3.0)
+    ap.add_argument("--gdb-every", type=float, default=8.0)
+    ap.add_argument("--log", type=Path, default=DEFAULT_LOG)
+    ap.add_argument("--no-reload", action="store_true")
+    ap.add_argument("--no-menu", action="store_true")
+    ap.add_argument(
+        "--darwin",
+        action="store_true",
+        help="evolve menu genomes across bots, then play as champion/session",
+    )
+    ap.add_argument("--bots", type=int, default=4, help="Darwin population size")
+    ap.add_argument("--generations", type=int, default=3)
+    ap.add_argument("--gen-seconds", type=float, default=28.0)
+    args = ap.parse_args()
+
+    anomalies: list[str] = []
+    play_n = probes = gdb_n = http_errors = 0
+    prev_core: dict | None = None
+    prev_gdb: dict | None = None
+    prev_ticks: dict[int, tuple[float, int]] = {}
+    play_dt = 1.0 / max(args.play_hz, 1.0)
+    cached_gdb_port = 0
+    last_heights: list[int] | None = None
+    genome = load_genome()
+
+    with args.log.open("w", encoding="utf-8") as fp:
+        log_line(
+            fp,
+            f"play_agent start session={args.session} play_hz={args.play_hz} "
+            f"gdb_every={args.gdb_every}s darwin={args.darwin}",
+        )
+        if args.darwin:
+            genome = darwin_evolve(
+                args.base,
+                bots=max(2, args.bots),
+                generations=max(1, args.generations),
+                gen_seconds=args.gen_seconds,
+                fp=fp,
+            )
+            # Promote champion session into continuous play when it reached LIVE.
+            if genome.get("champion") and int(genome.get("fitness") or 0) >= 5:
+                args.session = str(genome["champion"])
+                args.no_reload = True
+                args.no_menu = True
+                log_line(fp, f"darwin: promote champion session={args.session}")
+            else:
+                log_line(
+                    fp,
+                    f"darwin: no LIVE champ — continue on {args.session} with best genome",
+                )
+
+        client = PlayClient(args.base, args.session)
+        if not args.no_reload:
+            code, load = client.load_builtin(args.rom)
+            log_line(fp, f"load http={code} body={json.dumps(load)[:260]}")
+            if code != 200 or not (isinstance(load, dict) and load.get("ok")):
+                log_line(fp, "FATAL: load failed")
+                return 1
+            if not args.no_menu:
+                enter_tetris(client, fp, genome=genome)
+        else:
+            log_line(fp, f"join existing session={args.session}")
+
+        deadline = None if args.seconds <= 0 else time.monotonic() + args.seconds
+        next_probe = time.monotonic()
+        next_play = time.monotonic()
+        next_vision = time.monotonic()
+        next_gdb = time.monotonic() + 3.0
+
+        while deadline is None or time.monotonic() < deadline:
+            try:
+                now = time.monotonic()
+
+                if now >= next_vision:
+                    next_vision = now + args.vision_every
+                    code, rgb = client.frame_rgb()
+                    if code == 200 and isinstance(rgb, (bytes, bytearray)) and len(rgb) >= SCREEN_W * SCREEN_H * 3:
+                        rgb_b = bytes(rgb)
+                        if exit_demo_if_needed(client, fp, rgb_b):
+                            # Re-enter Marathon after leaving attract mode.
+                            for _ in range(4):
+                                tap(client, A, 0.12, 0.4)
+                            last_heights = None
+                        else:
+                            last_heights = column_heights(rgb_b)
+                    elif code == 503 or code == 0:
+                        pass
+                    else:
+                        http_errors += 1
+
+                if now >= next_play:
+                    next_play = now + play_dt
+                    play_n += 1
+                    heights = last_heights
+                    if heights is not None:
+                        btn = pick_move(heights, play_n)
+                    else:
+                        btn = (DOWN, DOWN, A, LEFT, DOWN, RIGHT, B, DOWN)[play_n % 8]
+                    # Hold longer so the game actually samples the key.
+                    hold_s = 0.11 if btn == DOWN else 0.08
+                    if heights and max(heights) >= 12 and btn in (LEFT, RIGHT, A):
+                        hold(client, DOWN, 0.08)
+                    hold(client, btn, hold_s)
+                    if play_n % 24 == 0:
+                        mh = max(heights) if heights else -1
+                        log_line(fp, f"play n={play_n} btn={btn} maxH={mh}")
+
+                if now >= next_probe:
+                    next_probe = now + args.probe_every
+                    probes += 1
+                    sc, status = client.status()
+                    dc, debug = client.debug()
+                    if sc >= 500 or sc == 0 or dc >= 500 or dc == 0:
+                        http_errors += 1
+                        log_line(fp, f"WARN http status={sc} debug={dc}")
+                        anomalies.append(f"http_error status={sc} debug={dc}")
+                    else:
+                        status = status if isinstance(status, dict) else {}
+                        debug = debug if isinstance(debug, dict) else {}
+                        frames = status.get("frames")
+                        if frames is None and isinstance(debug.get("run"), dict):
+                            frames = debug["run"].get("frames")
+                        cpu = debug.get("cpu") or {}
+                        ppu = debug.get("ppu") or {}
+                        irq = debug.get("irq") or {}
+                        gdb_meta = debug.get("gdb") or {}
+                        host_line, prev_ticks = host_snapshot(prev_ticks)
+                        log_line(
+                            fp,
+                            "probe "
+                            f"frames={frames} pc={_hex(cpu.get('pc'))} "
+                            f"ly={ppu.get('ly')} ime={cpu.get('ime')} "
+                            f"halted={cpu.get('halted')} if={_hex(irq.get('if'))} "
+                            f"gdb_port={status.get('gdb_port') or gdb_meta.get('port')} "
+                            f"gdb_halted={gdb_meta.get('halted')} | {host_line}",
+                        )
+                        for f in analyze_http(prev_core, status, debug):
+                            log_line(fp, f"ANOMALY {f}")
+                            anomalies.append(f)
+                        if_zero = (irq.get("if") or 0) == 0
+                        prev_core = {
+                            "frames": frames,
+                            "pc": cpu.get("pc"),
+                            "halted": cpu.get("halted"),
+                            "pc_same": (
+                                (prev_core or {}).get("pc_same", 0) + 1
+                                if prev_core and prev_core.get("pc") == cpu.get("pc")
+                                else 0
+                            ),
+                            "halt_same": (
+                                (prev_core or {}).get("halt_same", 0) + 1
+                                if prev_core and prev_core.get("halted") and cpu.get("halted")
+                                else 0
+                            ),
+                            "if_zero_streak": (
+                                (prev_core or {}).get("if_zero_streak", 0) + 1
+                                if if_zero
+                                else 0
+                            ),
+                        }
+
+                if now >= next_gdb:
+                    next_gdb = now + args.gdb_every
+                    gdb_n += 1
+                    gdb_port = cached_gdb_port or client.gdb_port_for_self()
+                    if gdb_port:
+                        cached_gdb_port = gdb_port
+                    if not gdb_port:
+                        log_line(fp, "WARN gdb_port missing — is softgbc-play new enough?")
+                    else:
+                        try:
+                            snap = GdbClient("127.0.0.1", gdb_port).sample()
+                            regs = snap["regs"]
+                            mem = snap["mem_at_pc"]
+                            log_line(
+                                fp,
+                                "gdb "
+                                f"pc={_hex(regs.get('pc'))} sp={_hex(regs.get('sp'))} "
+                                f"af={_hex(regs.get('af'))} bc={_hex(regs.get('bc'))} "
+                                f"de={_hex(regs.get('de'))} hl={_hex(regs.get('hl'))} "
+                                f"ime={regs.get('ime')} mem@pc={mem}",
+                            )
+                            for f in analyze_gdb(snap, prev_gdb):
+                                log_line(fp, f"ANOMALY {f}")
+                                anomalies.append(f)
+                            prev_gdb = {
+                                "pc": regs.get("pc"),
+                                "mem": mem,
+                                "same": (
+                                    (prev_gdb or {}).get("same", 0) + 1
+                                    if prev_gdb
+                                    and prev_gdb.get("pc") == regs.get("pc")
+                                    and prev_gdb.get("mem") == mem
+                                    else 0
+                                ),
+                            }
+                        except Exception as e:
+                            log_line(fp, f"WARN gdb_sample failed: {e}")
+                            anomalies.append(f"gdb_sample_error {e}")
+
+                time.sleep(0.004)
+            except Exception as e:
+                http_errors += 1
+                log_line(fp, f"WARN loop recovered: {type(e).__name__}: {e}")
+                time.sleep(0.5)
+
+        uniq = sorted(set(anomalies))
+        log_line(
+            fp,
+            f"done plays={play_n} probes={probes} gdb={gdb_n} "
+            f"http_errors={http_errors} anomalies={len(uniq)}",
+        )
+        for a in uniq:
+            log_line(fp, f"summary {a}")
+        if not uniq:
+            log_line(fp, "summary no anomalies flagged")
+    return 0 if http_errors == 0 else 2
+
+
+def _hex(v) -> str:
+    if v is None:
+        return "-"
+    try:
+        return f"0x{int(v):04X}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

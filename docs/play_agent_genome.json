@@ -1,31 +1,74 @@
 {
   "weights": [
-    1.5324843596680844,
-    0.5663081098828108,
-    0.35389675091295414,
-    1.1335728230328892,
-    1.526664383209193,
-    0.3825015269044447,
-    0.48156381636466805
+    0.7928667599079653,
+    0.05,
+    1.136190598931235,
+    0.43742702033141834,
+    2.5097427419852076,
+    1.1029274188925067,
+    0.2413535773199984
   ],
-  "fitness": 2,
-  "generation": 2,
-  "champion": "darwin1",
+  "play_weights": [
+    1.387238701333568,
+    1.2433036108691389,
+    0.38293909171319385,
+    0.9417865437221643,
+    0.05,
+    0.6327484217015943
+  ],
+  "fitness": 4,
+  "best_score": 0,
+  "estimated_lines": 0,
+  "generation": 8,
+  "champion": "darwin3",
   "board": [
     {
+      "id": "darwin3",
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
+    },
+    {
       "id": "darwin1",
-      "best": "name/file",
-      "final": "name/file"
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
     },
     {
       "id": "darwin2",
-      "best": "name/file",
-      "final": "name/file"
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
     },
     {
-      "id": "darwin3",
-      "best": "name/file",
-      "final": "name/file"
+      "id": "darwin4",
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
+    },
+    {
+      "id": "darwin6",
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
+    },
+    {
+      "id": "darwin5",
+      "best": "level",
+      "final": "level",
+      "score": 0,
+      "estimated_lines": 0,
+      "live_snapshots": 0
     }
   ]
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""SoftGBC Tetris agent: Darwin menu learning → continuous play + GDB watch.
+"""SoftGBC Tetris agent: Darwin menu + gameplay races → champion play + GDB.
 
 Single entry point (do not add sibling race/scout scripts):
 
   ./play_agent.sh                      # forever on softgbcBot1
   ./play_agent.sh --darwin             # evolve genomes, promote winner, then play
-  python3 play_agent.py --darwin --bots 4 --generations 3 --gen-seconds 25
+  python3 play_agent.py --darwin --bots 4 --generations 3 --gen-seconds 25 --race-seconds 45
 """
 
 from __future__ import annotations
@@ -111,6 +111,9 @@ class PlayClient:
 
     def sessions(self) -> tuple[int, object]:
         return self._req("GET", "/api/play/sessions", timeout=5.0)
+
+    def stop(self) -> tuple[int, object]:
+        return self._req("POST", "/api/play/stop", body=b"", timeout=10.0)
 
     def frame_rgb(self) -> tuple[int, bytes]:
         code, data = self._req("GET", "/api/play/frame.rgb", timeout=3.0, raw=True)
@@ -444,12 +447,21 @@ def default_genome() -> list[float]:
     return [1.4, 0.8, 0.7, 0.9, 1.6, 0.6, 0.5]
 
 
+def default_play_weights() -> list[float]:
+    # DOWN, LEFT, RIGHT, rotate-A, rotate-B, panic-down.
+    return [1.5, 0.9, 0.9, 0.65, 0.45, 1.2]
+
+
 def load_genome(path: Path = GENOME_PATH) -> dict:
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             w = data.get("weights")
             if isinstance(w, list) and len(w) == len(MENU_ACTIONS):
+                pw = data.get("play_weights")
+                if not isinstance(pw, list) or len(pw) != len(default_play_weights()):
+                    data["play_weights"] = default_play_weights()
+                data.setdefault("best_score", 0)
                 return data
         except (OSError, json.JSONDecodeError, TypeError):
             pass
@@ -458,6 +470,8 @@ def load_genome(path: Path = GENOME_PATH) -> dict:
         "fitness": 0,
         "generation": 0,
         "champion": None,
+        "play_weights": default_play_weights(),
+        "best_score": 0,
     }
 
 
@@ -604,31 +618,78 @@ def darwin_evolve(
     bots: int,
     generations: int,
     gen_seconds: float,
+    race_seconds: float,
     fp,
     survivors: int = 2,
 ) -> dict:
-    """Multi-bot tournament: fitness by stage; mutate winners; persist genome."""
+    """Multi-bot tournament: reach LIVE, then compete on board fitness."""
     rng = random.Random(0xDA241)
     state = load_genome()
-    population = [list(state["weights"])]
+    population = [
+        (
+            list(state["weights"]),
+            list(state.get("play_weights") or default_play_weights()),
+        )
+    ]
     while len(population) < bots:
-        population.append(mutate_weights(population[0], rng))
+        population.append(
+            (
+                mutate_weights(population[0][0], rng),
+                mutate_weights(population[0][1], rng, scale=0.25),
+            )
+        )
 
-    champion_session = None
+    champion_session = state.get("champion")
+    all_sessions: set[str] = set()
     for gen in range(1, generations + 1):
-        log_line(fp, f"darwin: generation {gen}/{generations} bots={bots}")
-        scored: list[tuple[int, int, list[float], str]] = []
+        log_line(
+            fp,
+            f"darwin: generation {gen}/{generations} bots={bots} "
+            f"menu={gen_seconds:.0f}s race={race_seconds:.0f}s",
+        )
+        scored: list[dict] = []
 
-        def eval_bot(idx_weights: tuple[int, list[float]]):
-            idx, weights = idx_weights
+        def eval_bot(idx_genomes: tuple[int, tuple[list[float], list[float]]]):
+            idx, genomes = idx_genomes
+            menu_weights, play_weights = genomes
             sid = f"darwin{idx}"
+            all_sessions.add(sid)
             client = PlayClient(base, sid)
             code, body = client.load_builtin(TETRIS)
             if code != 200:
-                return (0, 0, weights, sid, f"load_fail:{body}")
-            brng = random.Random(rng.randint(0, 1_000_000) + idx)
-            best, final = run_menu_genome(client, weights, gen_seconds, brng)
-            return (best, final, weights, sid, None)
+                return {
+                    "stage": 0,
+                    "final": 0,
+                    "score": 0,
+                    "estimated_lines": 0,
+                    "live_snapshots": 0,
+                    "menu_weights": menu_weights,
+                    "play_weights": play_weights,
+                    "id": sid,
+                    "error": f"load_fail:{body}",
+                }
+            brng = random.Random(0xD00000 + gen * 1000 + idx)
+            best, final = run_menu_genome(client, menu_weights, gen_seconds, brng)
+            race = {"score": 0, "estimated_lines": 0, "live_snapshots": 0}
+            if best >= 5:
+                race = run_gameplay_race(
+                    client,
+                    play_weights,
+                    race_seconds,
+                    brng,
+                )
+                final = 5 if race.get("live") else final
+            return {
+                "stage": best if best >= 0 else -1,
+                "final": final,
+                "score": int(race.get("score") or 0),
+                "estimated_lines": int(race.get("estimated_lines") or 0),
+                "live_snapshots": int(race.get("live_snapshots") or 0),
+                "menu_weights": menu_weights,
+                "play_weights": play_weights,
+                "id": sid,
+                "error": None,
+            }
 
         with ThreadPoolExecutor(max_workers=bots) as pool:
             futs = [
@@ -636,49 +697,72 @@ def darwin_evolve(
                 for i in range(bots)
             ]
             for fut in as_completed(futs):
-                best, final, weights, sid, err = fut.result()
-                fit = best if best >= 0 else -1
-                scored.append((fit, final, weights, sid))
+                result = fut.result()
+                scored.append(result)
                 log_line(
                     fp,
-                    f"darwin: {sid} best={STAGE_NAMES.get(best, best)} "
-                    f"now={STAGE_NAMES.get(final, final)}"
-                    + (f" err={err}" if err else ""),
+                    f"darwin: {result['id']} "
+                    f"best={STAGE_NAMES.get(result['stage'], result['stage'])} "
+                    f"now={STAGE_NAMES.get(result['final'], result['final'])} "
+                    f"score={result['score']} lines~={result['estimated_lines']} "
+                    f"samples={result['live_snapshots']}"
+                    + (f" err={result['error']}" if result["error"] else ""),
                 )
 
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        if not generation_has_valid_bot(scored):
+            log_line(fp, "darwin: generation invalid — all bot loads failed; genome unchanged")
+            break
+        scored.sort(key=race_rank_key, reverse=True)
         keep = max(1, min(survivors, len(scored)))
         elites = scored[:keep]
-        champion_session = elites[0][3]
+        champion_session = str(elites[0]["id"])
         state = {
-            "weights": elites[0][2],
-            "fitness": elites[0][0],
+            "weights": elites[0]["menu_weights"],
+            "play_weights": elites[0]["play_weights"],
+            "fitness": elites[0]["stage"],
+            "best_score": elites[0]["score"],
+            "estimated_lines": elites[0]["estimated_lines"],
             "generation": int(state.get("generation") or 0) + 1,
             "champion": champion_session,
             "board": [
                 {
-                    "id": sid,
-                    "best": STAGE_NAMES.get(fit, fit),
-                    "final": STAGE_NAMES.get(fin, fin),
+                    "id": result["id"],
+                    "best": STAGE_NAMES.get(result["stage"], result["stage"]),
+                    "final": STAGE_NAMES.get(result["final"], result["final"]),
+                    "score": result["score"],
+                    "estimated_lines": result["estimated_lines"],
+                    "live_snapshots": result["live_snapshots"],
                 }
-                for fit, fin, _, sid in scored
+                for result in scored
             ],
         }
         save_genome(state)
         log_line(
             fp,
-            f"darwin: survivors={[s[3] for s in elites]} "
-            f"champ={champion_session} fit={STAGE_NAMES.get(elites[0][0], elites[0][0])}",
+            f"darwin: survivors={[s['id'] for s in elites]} "
+            f"champ={champion_session} "
+            f"stage={STAGE_NAMES.get(elites[0]['stage'], elites[0]['stage'])} "
+            f"score={elites[0]['score']}",
         )
-        if elites[0][0] >= 5:
-            log_line(fp, "darwin: LIVE reached — stop evolving")
-            break
-        # Next generation: elites + mutated children
-        population = [list(e[2]) for e in elites]
+        # Next generation: retain exact winners, then mutate both menu and play policy.
+        population = [
+            (list(e["menu_weights"]), list(e["play_weights"]))
+            for e in elites
+        ]
         while len(population) < bots:
-            parent = elites[rng.randrange(keep)][2]
-            population.append(mutate_weights(parent, rng))
+            parent = elites[rng.randrange(keep)]
+            population.append(
+                (
+                    mutate_weights(parent["menu_weights"], rng),
+                    mutate_weights(parent["play_weights"], rng, scale=0.25),
+                )
+            )
 
+    # Keep only the promoted winner alive; race session IDs are reused each generation.
+    for sid in sorted(all_sessions):
+        if sid != champion_session:
+            PlayClient(base, sid).stop()
+    log_line(fp, f"darwin: cleanup complete; promoted={champion_session}")
     return state
 
 
@@ -703,24 +787,134 @@ def column_heights(rgb: bytes) -> list[int]:
     return heights
 
 
-def pick_move(heights: list[int], n: int) -> int:
-    if not heights:
-        return DOWN
-    target = min(range(PF_COLS), key=lambda c: (heights[c], abs(c - 4)))
-    phase = n % 8
-    if phase in (0, 1, 2):
-        return DOWN
-    if phase == 3:
-        return A
-    if phase == 4:
-        return B
-    if target < 3:
-        return LEFT
-    if target > 5:
-        return RIGHT
-    if phase == 5:
-        return LEFT if n % 2 == 0 else RIGHT
+def board_metrics(rgb: bytes) -> tuple[list[int], int, int]:
+    """Return (column heights, covered holes, height bumpiness)."""
+    heights = column_heights(rgb)
+    holes = 0
+    for c in range(PF_COLS):
+        seen = False
+        for r in range(PF_ROWS):
+            filled = cell_filled(rgb, c, r)
+            if filled:
+                seen = True
+            elif seen:
+                holes += 1
+    bumpiness = sum(abs(heights[i] - heights[i + 1]) for i in range(len(heights) - 1))
+    return heights, holes, bumpiness
+
+
+class BoardFitness:
+    """Board-quality race score; rewards survival/clears, penalizes danger."""
+
+    def __init__(self) -> None:
+        self.live_snapshots = 0
+        self.estimated_lines = 0
+        self.score = 0
+        self._survival_points = 0
+        self._clear_points = 0
+        self._previous_aggregate: int | None = None
+
+    def observe(self, heights: list[int], holes: int, bumpiness: int) -> int:
+        aggregate = sum(heights)
+        self.live_snapshots += 1
+        self._survival_points += 10
+        if self._previous_aggregate is not None:
+            drop = self._previous_aggregate - aggregate
+            if drop >= 6:
+                cleared = min(4, max(1, round(drop / max(PF_COLS, 1))))
+                self.estimated_lines += cleared
+                self._clear_points += (0, 1000, 3000, 5000, 8000)[cleared]
+        self._previous_aggregate = aggregate
+        danger = holes * 35 + (max(heights) if heights else 0) * 4 + bumpiness * 2
+        self.score = self._survival_points + self._clear_points - danger
+        return self.score
+
+    def result(self) -> dict:
+        return {
+            "score": self.score,
+            "estimated_lines": self.estimated_lines,
+            "live_snapshots": self.live_snapshots,
+        }
+
+
+def pick_race_move(
+    heights: list[int],
+    n: int,
+    weights: list[float],
+    rng: random.Random,
+) -> int:
+    """Genome-weighted board policy used by both tournament and champion."""
+    if len(weights) != len(default_play_weights()):
+        weights = default_play_weights()
+    target = min(range(len(heights)), key=lambda c: (heights[c], abs(c - 4))) if heights else 4
+    max_h = max(heights) if heights else 0
+    scores = [
+        weights[0] + (weights[5] if max_h >= 12 else 0.0),  # DOWN
+        weights[1] + max(0, 4 - target) * 0.45,             # LEFT
+        weights[2] + max(0, target - 5) * 0.45,             # RIGHT
+        weights[3] + (0.35 if n % 5 == 0 else 0.0),         # A
+        weights[4] + (0.25 if n % 7 == 0 else 0.0),         # B
+    ]
+    actions = (DOWN, LEFT, RIGHT, A, B)
+    m = max(scores)
+    exps = [math.exp(s - m) for s in scores]
+    pick = rng.random() * sum(exps)
+    acc = 0.0
+    for action, weight in zip(actions, exps):
+        acc += weight
+        if pick <= acc:
+            return action
     return DOWN
+
+
+def race_rank_key(result: dict) -> tuple[int, int, int]:
+    """Stage always dominates; actual LIVE race score breaks stage ties."""
+    return (
+        int(result.get("stage") or 0),
+        int(result.get("score") or 0),
+        int(result.get("final") or 0),
+    )
+
+
+def generation_has_valid_bot(results: list[dict]) -> bool:
+    """A transport/load failure must never overwrite a learned genome."""
+    return any(not result.get("error") for result in results)
+
+
+def run_gameplay_race(
+    client: PlayClient,
+    weights: list[float],
+    seconds: float,
+    rng: random.Random,
+    play_hz: float = 7.0,
+) -> dict:
+    """Play one LIVE session for a bounded round and return board fitness."""
+    tracker = BoardFitness()
+    deadline = time.monotonic() + max(1.0, seconds)
+    n = 0
+    seen_live = False
+    while time.monotonic() < deadline:
+        code, rgb = client.frame_rgb()
+        if code != 200 or not isinstance(rgb, (bytes, bytearray)):
+            time.sleep(0.08)
+            continue
+        rgb_b = bytes(rgb)
+        stage = classify_stage(rgb_b)
+        if stage != 5:
+            if seen_live:
+                break
+            time.sleep(0.08)
+            continue
+        seen_live = True
+        heights, holes, bumpiness = board_metrics(rgb_b)
+        tracker.observe(heights, holes, bumpiness)
+        n += 1
+        action = pick_race_move(heights, n, weights, rng)
+        hold(client, action, 0.10 if action == DOWN else 0.07)
+        time.sleep(max(0.0, 1.0 / max(play_hz, 1.0) - 0.07))
+    result = tracker.result()
+    result["live"] = seen_live
+    return result
 
 
 def read_proc(pid: int) -> dict | None:
@@ -869,6 +1063,12 @@ def main() -> int:
     ap.add_argument("--bots", type=int, default=4, help="Darwin population size")
     ap.add_argument("--generations", type=int, default=3)
     ap.add_argument("--gen-seconds", type=float, default=28.0)
+    ap.add_argument(
+        "--race-seconds",
+        type=float,
+        default=45.0,
+        help="LIVE gameplay round length per generation",
+    )
     args = ap.parse_args()
 
     anomalies: list[str] = []
@@ -893,6 +1093,7 @@ def main() -> int:
                 bots=max(2, args.bots),
                 generations=max(1, args.generations),
                 gen_seconds=args.gen_seconds,
+                race_seconds=args.race_seconds,
                 fp=fp,
             )
             # Promote champion session into continuous play when it reached LIVE.
@@ -925,6 +1126,8 @@ def main() -> int:
         next_vision = time.monotonic()
         next_gdb = time.monotonic() + 3.0
         seen_live = False
+        play_rng = random.Random(0xB07 ^ int(genome.get("generation") or 0))
+        play_weights = list(genome.get("play_weights") or default_play_weights())
 
         while deadline is None or time.monotonic() < deadline:
             try:
@@ -969,7 +1172,7 @@ def main() -> int:
                     play_n += 1
                     heights = last_heights
                     if heights is not None:
-                        btn = pick_move(heights, play_n)
+                        btn = pick_race_move(heights, play_n, play_weights, play_rng)
                     else:
                         btn = (DOWN, DOWN, A, LEFT, DOWN, RIGHT, B, DOWN)[play_n % 8]
                     # Hold longer so the game actually samples the key.

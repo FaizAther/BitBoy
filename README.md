@@ -27,6 +27,15 @@ QEMU SM83 target  ←  SameBoy / mGBA  ←  Verilog simulation  ←  FPGA hardwa
                                          (HIL, trace capture, compare)
 ```
 
+## SoftGBC gameplay
+
+<p align="center">
+  <img src="docs/assets/softgbc-tetris-gameplay.png" width="320" alt="Tetris DX gameplay running in SoftGBC">
+  <img src="docs/assets/softgbc-tetris-gameplay-2.png" width="320" alt="A second Tetris DX gameplay frame running in SoftGBC">
+</p>
+
+*SoftGBC emulator-development captures used for compatibility testing. Tetris and its game assets belong to their respective rights holders.*
+
 ## Goals
 
 - Implement an **SM83 / Game Boy CPU** target for LLVM.

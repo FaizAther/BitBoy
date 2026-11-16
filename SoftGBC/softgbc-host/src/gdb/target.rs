@@ -72,22 +72,23 @@ impl GdbMachine {
         self.breakpoints.contains(&self.gb.cpu.pc)
     }
 
-    /// One LCD frame of machine time + render (same as SoftGbcController::advance_frame).
+    /// One LCD frame of machine time. The framebuffer is the visible picture
+    /// at the VBlank edge (see [`crate::controller::run_lcd_frame`]).
     pub fn advance_frame(&mut self) {
-        let target_t: u32 = 154 * 456;
-        let mut t_done = 0u32;
-        while t_done < target_t {
-            let m = self.gb.step();
-            t_done += u32::from(m) * 4;
-            if self.breakpoints.contains(&self.gb.cpu.pc) {
-                self.gdb_halted = true;
-                break;
+        let GdbMachine {
+            gb,
+            breakpoints,
+            gdb_halted,
+            ..
+        } = self;
+        crate::controller::run_lcd_frame(gb, |gb| {
+            if breakpoints.contains(&gb.cpu.pc) {
+                *gdb_halted = true;
+                true
+            } else {
+                false
             }
-        }
-        self.gb
-            .bus
-            .ppu
-            .render_frame(&self.gb.bus.vram, &self.gb.bus.oam);
+        });
     }
 }
 
@@ -329,5 +330,75 @@ mod tests {
         m.breakpoints.insert(0x0101);
         assert!(m.step_insn()); // after NOP at 100, PC=101 → break
         assert_eq!(m.gb.cpu.pc, 0x0101);
+    }
+
+    /// ROM: one OBJ over a blank BG, then the VBlank handler turns the LCD off
+    /// and hides the sprite. Hardware showed that picture for the whole visible
+    /// frame; a snapshot taken after the handler is a blank LCD-off frame.
+    fn lcd_off_in_vblank_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 0x200];
+        // $0040 VBlank: LCD off + sprite Y = 0 (would drop the OBJ if we render late).
+        let handler = [
+            0x3E, 0x00, // LD A, 0
+            0xE0, 0x40, // LDH (LCDC), A
+            0xAF, // XOR A
+            0xEA, 0x00, 0xFE, // LD ($FE00), A
+            0xD9, // RETI
+        ];
+        rom[0x0040..0x0040 + handler.len()].copy_from_slice(&handler);
+        // $0100 setup, then HALT until VBlank.
+        let entry = [
+            0x31, 0xFE, 0xFF, // LD SP, $FFFE
+            0x3E, 0x38, // LD A, 56        ; screen Y = 40
+            0xEA, 0x00, 0xFE, // LD ($FE00), A
+            0x3E, 0x30, // LD A, 48        ; screen X = 40
+            0xEA, 0x01, 0xFE, // LD ($FE01), A
+            0x3E, 0x01, // LD A, 1         ; tile 1
+            0xEA, 0x02, 0xFE, // LD ($FE02), A
+            0xAF, // XOR A                 ; flags 0
+            0xEA, 0x03, 0xFE, // LD ($FE03), A
+            0x3E, 0xFF, // LD A, $FF       ; tile 1 solid colour 3
+            0x21, 0x10, 0x80, // LD HL, $8010
+            0x06, 0x10, // LD B, 16
+            0x22, // LD (HL+), A
+            0x05, // DEC B
+            0x20, 0xFC, // JR NZ, fill
+            0x3E, 0xE4, // LD A, $E4
+            0xE0, 0x47, // LDH (BGP), A
+            0xE0, 0x48, // LDH (OBP0), A
+            0x3E, 0x01, // LD A, 1
+            0xE0, 0xFF, // LDH (IE), A     ; VBlank
+            0x3E, 0x93, // LD A, $93       ; LCD + OBJ + BG + $8000
+            0xE0, 0x40, // LDH (LCDC), A
+            0xFB, // EI
+            0x00, // NOP                    ; IME arms after this
+            0x76, // HALT
+            0x18, 0xFD, // JR HALT
+        ];
+        rom[0x0100..0x0100 + entry.len()].copy_from_slice(&entry);
+        rom
+    }
+
+    #[test]
+    fn advance_frame_presents_visible_frame_before_lcd_off_blank() {
+        let mut m = GdbMachine::new(SoftGbc::from_rom_bytes(&lcd_off_in_vblank_rom()));
+        m.advance_frame();
+        // Handler ran: LCD is off and the sprite Y was cleared. A render *now*
+        // would blank. The framebuffer must still be the completed visible frame.
+        assert_eq!(m.gb.bus.ppu.LCDC & 0x80, 0, "VBlank handler turned the LCD off");
+        assert_eq!(m.gb.bus.oam[0], 0, "handler hid the sprite after the frame");
+        assert_eq!(
+            m.gb.bus.ppu.framebuffer[40 * 160 + 40],
+            3,
+            "OBJ pixel from the completed visible frame"
+        );
+        assert_eq!(m.gb.bus.ppu.framebuffer[0], 0, "BG colour 0 stays shade 0");
+
+        // LCD stays off for the next budget: the screen really is blank.
+        m.advance_frame();
+        assert!(
+            m.gb.bus.ppu.framebuffer.iter().all(|&p| p == 0),
+            "LCD off for the whole frame blanks"
+        );
     }
 }

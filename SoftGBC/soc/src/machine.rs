@@ -184,4 +184,101 @@ mod tests {
         assert_eq!(gb.cpu.pc, 0x0100);
         assert_eq!(gb.bus.entry, 0x0100);
     }
+
+    fn tetris_dx_rom_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../cartridge/roms/Tetris DX (World) (SGB Enhanced) (GB Compatible).gbc",
+        )
+    }
+
+    fn sp_in_ram(sp: u16) -> bool {
+        matches!(sp, 0xC000..=0xDFFF | 0xFF80..=0xFFFE)
+    }
+
+    fn pc_is_mapped(pc: u16) -> bool {
+        // Instruction fetches belong in ROM, WRAM, or HRAM. Cart RAM, VRAM,
+        // OAM, and I/O are not where this ROM's boot runs.
+        matches!(pc, 0x0000..=0x7FFF | 0xC000..=0xDFFF | 0xFF80..=0xFFFE)
+    }
+
+    fn is_illegal_opcode(op: u8) -> bool {
+        matches!(
+            op,
+            0xD3 | 0xDB | 0xDD | 0xE3 | 0xE4 | 0xEB | 0xEC | 0xED | 0xF4 | 0xFC | 0xFD
+        )
+    }
+
+    /// Headless Tetris DX skip-boot: no illegal opcode, SP stays in RAM,
+    /// LCD turns on, and LY moves. Skips when the ROM file is absent.
+    #[test]
+    fn tetris_dx_boots_lcd_on_and_ly_advances() {
+        let path = tetris_dx_rom_path();
+        if !path.is_file() {
+            return;
+        }
+        let mut gb = SoftGbc::from_rom_file(&path).expect("load Tetris DX");
+        assert_eq!(gb.cpu.a, 0x01, "skip-boot DMG leftover");
+        assert_eq!(gb.cpu.pc, 0x0100);
+        assert!(gb.bus.cart.is_some(), "MBC1 image");
+
+        const MAX_STEPS: u32 = 500_000;
+        let mut saw_lcd = false;
+        let mut ly_when_lcd_on = 0u8;
+        let mut ly_advanced = false;
+        let mut last_pc = gb.cpu.pc;
+
+        for step_i in 0..MAX_STEPS {
+            let pc = gb.cpu.pc;
+            let sp = gb.cpu.sp;
+            last_pc = pc;
+            assert!(
+                sp_in_ram(sp),
+                "SP {sp:04X} left RAM at step {step_i} PC {pc:04X}"
+            );
+            assert!(
+                pc_is_mapped(pc),
+                "PC {pc:04X} left mapped memory at step {step_i} SP {sp:04X}"
+            );
+            if !gb.cpu.halted {
+                let op = gb.read8(pc).unwrap_or(0xFF);
+                assert!(
+                    !is_illegal_opcode(op),
+                    "illegal opcode {op:02X} at PC {pc:04X} step {step_i}"
+                );
+            }
+
+            let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gb.step()));
+            if let Err(payload) = stepped {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "panic".to_string());
+                panic!("step panicked at PC {pc:04X} step {step_i}: {msg}");
+            }
+
+            let lcdc = gb.read8(0xFF40).unwrap_or(0);
+            let ly = gb.read8(0xFF44).unwrap_or(0);
+            if lcdc & 0x80 != 0 {
+                if !saw_lcd {
+                    saw_lcd = true;
+                    ly_when_lcd_on = ly;
+                } else if ly != ly_when_lcd_on {
+                    ly_advanced = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            saw_lcd,
+            "LCD never turned on within {MAX_STEPS} steps (PC {last_pc:04X} halted {} LY {})",
+            gb.cpu.halted,
+            gb.read8(0xFF44).unwrap_or(0)
+        );
+        assert!(
+            ly_advanced,
+            "LCD on but LY stuck at {ly_when_lcd_on} (PC {last_pc:04X})"
+        );
+    }
 }

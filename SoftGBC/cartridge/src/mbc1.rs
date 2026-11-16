@@ -154,4 +154,46 @@ mod tests {
         m.write(0xA000, 0x55);
         assert_eq!(m.read(0xA000), 0x55);
     }
+
+    /// 512 KiB image: 32 × 16 KiB banks. `$4000` follows the selected bank,
+    /// a bank-0 request aliases to bank 1, and `$A000` stays open until `$0A`.
+    #[test]
+    fn rom_32_banks_maps_1_2_31_and_ram_enable_0a() {
+        let mut rom = vec![0u8; 32 * 0x4000];
+        rom[0x0147] = 0x03; // MBC1+RAM+BATTERY
+        rom[0x0148] = 0x04; // 512 KiB
+        rom[0x0149] = 0x02; // 8 KiB RAM
+        for bank in 0..32u8 {
+            let base = bank as usize * 0x4000;
+            rom[base] = bank;
+            rom[base + 0x100] = bank.wrapping_add(0x40);
+        }
+        let mut m = Mbc1::new(rom);
+        assert_eq!(m.rom_len(), 32 * 0x4000);
+        assert_eq!(m.read(0x0000), 0, "bank 0 stays at $0000 in simple mode");
+
+        // Power-on bank register is 1.
+        assert_eq!(m.read(0x4000), 1);
+        assert_eq!(m.read(0x4100), 0x41);
+
+        m.write(0x2000, 2);
+        assert_eq!(m.read(0x4000), 2);
+        assert_eq!(m.read(0x4100), 0x42);
+
+        m.write(0x2000, 31);
+        assert_eq!(m.read(0x4000), 31);
+        assert_eq!(m.read(0x4100), 31u8.wrapping_add(0x40));
+
+        m.write(0x2000, 0); // hardware aliases 0 → 1
+        assert_eq!(m.read(0x4000), 1);
+        assert_eq!(m.read(0x0000), 0);
+
+        m.write(0xA000, 0x5A);
+        assert_eq!(m.read(0xA000), 0xFF, "RAM disabled reads open bus");
+        m.write(0x0000, 0x0A);
+        m.write(0xA000, 0x5A);
+        assert_eq!(m.read(0xA000), 0x5A, "0x0A enables $A000");
+        m.write(0x0000, 0x00);
+        assert_eq!(m.read(0xA000), 0xFF, "any other low nibble closes RAM");
+    }
 }

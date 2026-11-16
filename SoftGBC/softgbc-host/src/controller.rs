@@ -44,18 +44,7 @@ impl SoftGbcController {
 
 impl PpuController for SoftGbcController {
     fn advance_frame(&mut self) {
-        // One full frame of machine time (154 lines × 456 T), via CPU steps when
-        // possible; fall back to raw T ticks so headless still paints.
-        let target_t: u32 = 154 * 456;
-        let mut t_done = 0u32;
-        while t_done < target_t {
-            let m = self.gb.step();
-            t_done += u32::from(m) * 4;
-        }
-        self.gb
-            .bus
-            .ppu
-            .render_frame(&self.gb.bus.vram, &self.gb.bus.oam);
+        run_lcd_frame(&mut self.gb, |_| false);
     }
 
     fn frame(&self) -> ShadeFrame<'_> {
@@ -66,6 +55,41 @@ impl PpuController for SoftGbcController {
 impl ShadeFrameSource for SoftGbcController {
     fn shade_frame(&self) -> ShadeFrame<'_> {
         self.frame()
+    }
+}
+
+/// One LCD frame of CPU time, then a framebuffer of the **completed visible**
+/// picture.
+///
+/// `advance_frame` used to run `154 * 456` T-cycles and render once at the
+/// end. Tetris DX's VBlank handler often turns the LCD off (or clears BGP /
+/// OAM) after line 143, so that end snapshot was a blank or a half-updated
+/// sprite list. Render on the step that enters VBlank (`LY` becomes ≥ 144)
+/// while the LCD is still on — the handler has not run yet — and keep that
+/// buffer. If the LCD never completes a visible frame, render once at the end
+/// so LCD-off still blanks.
+///
+/// `stop` returns true to leave the loop early (GDB breakpoint).
+pub(crate) fn run_lcd_frame(gb: &mut SoftGbc, mut stop: impl FnMut(&SoftGbc) -> bool) {
+    const TARGET_T: u32 = 154 * 456;
+    let mut t_done = 0u32;
+    let mut presented = false;
+    while t_done < TARGET_T {
+        let ly_before = gb.bus.ppu.ly;
+        let lcd_before = gb.bus.ppu.LCDC & 0x80 != 0;
+        let m = gb.step();
+        t_done += u32::from(m) * 4;
+        if stop(gb) {
+            break;
+        }
+        let lcd_now = gb.bus.ppu.LCDC & 0x80 != 0;
+        if !presented && lcd_before && lcd_now && ly_before < 144 && gb.bus.ppu.ly >= 144 {
+            gb.bus.ppu.render_frame(&gb.bus.vram, &gb.bus.oam);
+            presented = true;
+        }
+    }
+    if !presented {
+        gb.bus.ppu.render_frame(&gb.bus.vram, &gb.bus.oam);
     }
 }
 
